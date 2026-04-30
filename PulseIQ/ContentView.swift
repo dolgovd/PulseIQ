@@ -111,7 +111,7 @@ struct IOSBridgeView: View {
         .onAppear {
             healthKitManager.checkAuthorizationStatus()
         }
-        .onChange(of: syncManager.isConnected) { connected in
+        .onChange(of: syncManager.isConnected) { oldValue, connected in
             if connected {
                 healthKitManager.forceSyncAll()
             }

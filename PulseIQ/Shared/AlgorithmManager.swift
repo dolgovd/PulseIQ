@@ -80,4 +80,135 @@ public extension String {
     static let respiratoryRate = "HKQuantityTypeIdentifierRespiratoryRate"
     static let oxygenSaturation = "HKQuantityTypeIdentifierOxygenSaturation"
     static let activeEnergyBurned = "HKQuantityTypeIdentifierActiveEnergyBurned"
+    static let basalEnergyBurned = "HKQuantityTypeIdentifierBasalEnergyBurned"
+    static let heartRate = "HKQuantityTypeIdentifierHeartRate"
+    static let stepCount = "HKQuantityTypeIdentifierStepCount"
+    static let distanceWalkingRunning = "HKQuantityTypeIdentifierDistanceWalkingRunning"
+    static let distanceCycling = "HKQuantityTypeIdentifierDistanceCycling"
+    static let distanceSwimming = "HKQuantityTypeIdentifierDistanceSwimming"
+    static let swimmingStrokeCount = "HKQuantityTypeIdentifierSwimmingStrokeCount"
+    static let flightsClimbed = "HKQuantityTypeIdentifierFlightsClimbed"
+    static let bodyMass = "HKQuantityTypeIdentifierBodyMass"
+    static let bodyMassIndex = "HKQuantityTypeIdentifierBodyMassIndex"
+    static let leanBodyMass = "HKQuantityTypeIdentifierLeanBodyMass"
+    static let bodyFatPercentage = "HKQuantityTypeIdentifierBodyFatPercentage"
+    static let height = "HKQuantityTypeIdentifierHeight"
+    static let waistCircumference = "HKQuantityTypeIdentifierWaistCircumference"
+    static let vo2Max = "HKQuantityTypeIdentifierVO2Max"
+    static let walkingHeartRateAverage = "HKQuantityTypeIdentifierWalkingHeartRateAverage"
+    static let heartRateRecoveryOneMinute = "HKQuantityTypeIdentifierHeartRateRecoveryOneMinute"
+    static let appleExerciseTime = "HKQuantityTypeIdentifierAppleExerciseTime"
+    static let appleMoveTime = "HKQuantityTypeIdentifierAppleMoveTime"
+    static let appleStandTime = "HKQuantityTypeIdentifierAppleStandTime"
+    static let appleSleepingWristTemperature = "HKQuantityTypeIdentifierAppleSleepingWristTemperature"
+    static let environmentalAudioExposure = "HKQuantityTypeIdentifierEnvironmentalAudioExposure"
+    static let headphoneAudioExposure = "HKQuantityTypeIdentifierHeadphoneAudioExposure"
+    static let walkingSpeed = "HKQuantityTypeIdentifierWalkingSpeed"
+    static let walkingStepLength = "HKQuantityTypeIdentifierWalkingStepLength"
+    static let walkingAsymmetryPercentage = "HKQuantityTypeIdentifierWalkingAsymmetryPercentage"
+    static let walkingDoubleSupportPercentage = "HKQuantityTypeIdentifierWalkingDoubleSupportPercentage"
+    static let stairAscentSpeed = "HKQuantityTypeIdentifierStairAscentSpeed"
+    static let stairDescentSpeed = "HKQuantityTypeIdentifierStairDescentSpeed"
+    static let sixMinuteWalkTestDistance = "HKQuantityTypeIdentifierSixMinuteWalkTestDistance"
+    static let bloodPressureSystolic = "HKQuantityTypeIdentifierBloodPressureSystolic"
+    static let bloodPressureDiastolic = "HKQuantityTypeIdentifierBloodPressureDiastolic"
+    static let bloodGlucose = "HKQuantityTypeIdentifierBloodGlucose"
+    static let bodyTemperature = "HKQuantityTypeIdentifierBodyTemperature"
+    static let dietaryEnergyConsumed = "HKQuantityTypeIdentifierDietaryEnergyConsumed"
+    static let dietaryProtein = "HKQuantityTypeIdentifierDietaryProtein"
+    static let dietaryCarbohydrates = "HKQuantityTypeIdentifierDietaryCarbohydrates"
+    static let dietaryFatTotal = "HKQuantityTypeIdentifierDietaryFatTotal"
+    static let dietaryWater = "HKQuantityTypeIdentifierDietaryWater"
+    static let dietaryCaffeine = "HKQuantityTypeIdentifierDietaryCaffeine"
+    static let atrialFibrillationBurden = "HKQuantityTypeIdentifierAtrialFibrillationBurden"
+    static let numberOfTimesFallen = "HKQuantityTypeIdentifierNumberOfTimesFallen"
+    static let peripheralPerfusionIndex = "HKQuantityTypeIdentifierPeripheralPerfusionIndex"
+}
+
+/// Registry mapping HK identifiers to human-friendly display metadata.
+public struct HealthKitMetricInfo {
+    public let displayName: String
+    public let unit: String
+    public let icon: String
+    public let colorName: String
+    public let multiplier: Double
+    public let category: String  // Apple Health-style grouping
+    
+    /// Returns display info for any known HK type identifier, or a sensible default.
+    public static func info(for typeIdentifier: String) -> HealthKitMetricInfo {
+        return registry[typeIdentifier] ?? HealthKitMetricInfo(
+            displayName: typeIdentifier
+                .replacingOccurrences(of: "HKQuantityTypeIdentifier", with: "")
+                .replacingOccurrences(of: "HKCategoryTypeIdentifier", with: ""),
+            unit: "",
+            icon: "chart.line.uptrend.xyaxis",
+            colorName: "gray",
+            multiplier: 1.0,
+            category: "Other"
+        )
+    }
+    
+    /// Ordered list of categories matching Apple Health's layout
+    public static let categoryOrder = ["Heart", "Activity", "Body Measurements", "Respiratory", "Vitals", "Mobility", "Nutrition", "Hearing", "Other"]
+    
+    private static let registry: [String: HealthKitMetricInfo] = [
+        // Heart & Cardiovascular
+        String.heartRate: .init(displayName: "Heart Rate", unit: "bpm", icon: "heart.fill", colorName: "red", multiplier: 1.0),
+        String.restingHeartRate: .init(displayName: "Resting HR", unit: "bpm", icon: "heart.fill", colorName: "red", multiplier: 1.0),
+        String.walkingHeartRateAverage: .init(displayName: "Walking HR", unit: "bpm", icon: "figure.walk", colorName: "red", multiplier: 1.0),
+        String.heartRateVariabilitySDNN: .init(displayName: "HRV", unit: "ms", icon: "waveform.path.ecg", colorName: "red", multiplier: 1.0),
+        String.heartRateRecoveryOneMinute: .init(displayName: "HR Recovery", unit: "bpm", icon: "heart.text.square", colorName: "red", multiplier: 1.0),
+        String.atrialFibrillationBurden: .init(displayName: "AFib Burden", unit: "%", icon: "waveform.path.ecg.rectangle", colorName: "red", multiplier: 100.0),
+        // Respiratory
+        String.respiratoryRate: .init(displayName: "Respiratory Rate", unit: "rpm", icon: "lungs.fill", colorName: "teal", multiplier: 1.0),
+        String.oxygenSaturation: .init(displayName: "SpO2", unit: "%", icon: "o.circle.fill", colorName: "blue", multiplier: 100.0),
+        // Activity & Energy
+        String.activeEnergyBurned: .init(displayName: "Active Energy", unit: "kcal", icon: "flame.fill", colorName: "orange", multiplier: 1.0),
+        String.basalEnergyBurned: .init(displayName: "Resting Energy", unit: "kcal", icon: "bolt.fill", colorName: "yellow", multiplier: 1.0),
+        String.stepCount: .init(displayName: "Steps", unit: "steps", icon: "figure.walk", colorName: "green", multiplier: 1.0),
+        String.distanceWalkingRunning: .init(displayName: "Distance", unit: "m", icon: "map.fill", colorName: "green", multiplier: 1.0),
+        String.distanceCycling: .init(displayName: "Cycling", unit: "m", icon: "bicycle", colorName: "green", multiplier: 1.0),
+        String.distanceSwimming: .init(displayName: "Swimming", unit: "m", icon: "figure.pool.swim", colorName: "blue", multiplier: 1.0),
+        String.swimmingStrokeCount: .init(displayName: "Swim Strokes", unit: "strokes", icon: "figure.pool.swim", colorName: "blue", multiplier: 1.0),
+        String.flightsClimbed: .init(displayName: "Flights Climbed", unit: "floors", icon: "arrow.up.right", colorName: "green", multiplier: 1.0),
+        String.appleExerciseTime: .init(displayName: "Exercise Time", unit: "min", icon: "figure.run", colorName: "green", multiplier: 1.0),
+        String.appleMoveTime: .init(displayName: "Move Time", unit: "min", icon: "figure.walk", colorName: "green", multiplier: 1.0),
+        String.appleStandTime: .init(displayName: "Stand Time", unit: "min", icon: "figure.stand", colorName: "cyan", multiplier: 1.0),
+        // Body Measurements
+        String.bodyMass: .init(displayName: "Weight", unit: "kg", icon: "scalemass.fill", colorName: "purple", multiplier: 1.0),
+        String.bodyMassIndex: .init(displayName: "BMI", unit: "", icon: "person.fill", colorName: "purple", multiplier: 1.0),
+        String.leanBodyMass: .init(displayName: "Lean Mass", unit: "kg", icon: "figure.strengthtraining.traditional", colorName: "purple", multiplier: 1.0),
+        String.bodyFatPercentage: .init(displayName: "Body Fat", unit: "%", icon: "person.fill", colorName: "purple", multiplier: 100.0),
+        String.height: .init(displayName: "Height", unit: "cm", icon: "ruler", colorName: "purple", multiplier: 1.0),
+        String.waistCircumference: .init(displayName: "Waist", unit: "cm", icon: "circle.dashed", colorName: "purple", multiplier: 1.0),
+        // Cardio Fitness
+        String.vo2Max: .init(displayName: "VO2 Max", unit: "mL/kg·min", icon: "lungs.fill", colorName: "mint", multiplier: 1.0),
+        // Vitals
+        String.bodyTemperature: .init(displayName: "Body Temp", unit: "°C", icon: "thermometer.medium", colorName: "orange", multiplier: 1.0),
+        String.appleSleepingWristTemperature: .init(displayName: "Wrist Temp", unit: "°C", icon: "thermometer.medium", colorName: "orange", multiplier: 1.0),
+        String.bloodPressureSystolic: .init(displayName: "BP Systolic", unit: "mmHg", icon: "heart.circle.fill", colorName: "red", multiplier: 1.0),
+        String.bloodPressureDiastolic: .init(displayName: "BP Diastolic", unit: "mmHg", icon: "heart.circle", colorName: "pink", multiplier: 1.0),
+        String.bloodGlucose: .init(displayName: "Blood Glucose", unit: "mg/dL", icon: "drop.fill", colorName: "red", multiplier: 1.0),
+        // Audio
+        String.environmentalAudioExposure: .init(displayName: "Env. Sound", unit: "dB", icon: "ear.fill", colorName: "yellow", multiplier: 1.0),
+        String.headphoneAudioExposure: .init(displayName: "Headphone Audio", unit: "dB", icon: "headphones", colorName: "yellow", multiplier: 1.0),
+        // Mobility
+        String.walkingSpeed: .init(displayName: "Walking Speed", unit: "m/s", icon: "figure.walk", colorName: "mint", multiplier: 1.0),
+        String.walkingStepLength: .init(displayName: "Step Length", unit: "cm", icon: "ruler.fill", colorName: "mint", multiplier: 1.0),
+        String.walkingAsymmetryPercentage: .init(displayName: "Walk Asymmetry", unit: "%", icon: "figure.walk", colorName: "mint", multiplier: 100.0),
+        String.walkingDoubleSupportPercentage: .init(displayName: "Double Support", unit: "%", icon: "figure.walk", colorName: "mint", multiplier: 100.0),
+        String.stairAscentSpeed: .init(displayName: "Stair Ascent", unit: "m/s", icon: "arrow.up.right", colorName: "mint", multiplier: 1.0),
+        String.stairDescentSpeed: .init(displayName: "Stair Descent", unit: "m/s", icon: "arrow.down.right", colorName: "mint", multiplier: 1.0),
+        String.sixMinuteWalkTestDistance: .init(displayName: "6-Min Walk", unit: "m", icon: "figure.walk", colorName: "mint", multiplier: 1.0),
+        // Nutrition
+        String.dietaryEnergyConsumed: .init(displayName: "Calories In", unit: "kcal", icon: "fork.knife", colorName: "orange", multiplier: 1.0),
+        String.dietaryProtein: .init(displayName: "Protein", unit: "g", icon: "fork.knife", colorName: "orange", multiplier: 1.0),
+        String.dietaryCarbohydrates: .init(displayName: "Carbs", unit: "g", icon: "fork.knife", colorName: "orange", multiplier: 1.0),
+        String.dietaryFatTotal: .init(displayName: "Fat", unit: "g", icon: "fork.knife", colorName: "orange", multiplier: 1.0),
+        String.dietaryWater: .init(displayName: "Water", unit: "mL", icon: "drop.fill", colorName: "blue", multiplier: 1.0),
+        String.dietaryCaffeine: .init(displayName: "Caffeine", unit: "mg", icon: "cup.and.saucer.fill", colorName: "brown", multiplier: 1.0),
+        // Other
+        String.numberOfTimesFallen: .init(displayName: "Falls", unit: "", icon: "figure.fall", colorName: "red", multiplier: 1.0),
+        String.peripheralPerfusionIndex: .init(displayName: "Perfusion Index", unit: "%", icon: "drop.circle.fill", colorName: "red", multiplier: 100.0),
+    ]
 }

@@ -12,31 +12,121 @@ public class HealthKitManager: ObservableObject {
     
     private init() {}
     
+    // MARK: - All supported HealthKit quantity types
+    
+    /// Comprehensive list of all quantity types we want to read from HealthKit.
+    /// This covers the vast majority of metrics available on Apple Watch & iPhone.
+    private static let allQuantityTypes: [HKQuantityTypeIdentifier] = [
+        // Heart & Cardiovascular
+        .heartRate,
+        .restingHeartRate,
+        .walkingHeartRateAverage,
+        .heartRateVariabilitySDNN,
+        .heartRateRecoveryOneMinute,
+        .atrialFibrillationBurden,
+        
+        // Respiratory
+        .respiratoryRate,
+        .oxygenSaturation,
+        .forcedExpiratoryVolume1,
+        .forcedVitalCapacity,
+        .peakExpiratoryFlowRate,
+        
+        // Activity & Energy
+        .activeEnergyBurned,
+        .basalEnergyBurned,
+        .stepCount,
+        .distanceWalkingRunning,
+        .distanceCycling,
+        .distanceSwimming,
+        .swimmingStrokeCount,
+        .flightsClimbed,
+        .appleExerciseTime,
+        .appleMoveTime,
+        .appleStandTime,
+        .nikeFuel,
+        
+        // Body Measurements
+        .bodyMass,
+        .bodyMassIndex,
+        .leanBodyMass,
+        .bodyFatPercentage,
+        .height,
+        .waistCircumference,
+        
+        // Vitals
+        .bodyTemperature,
+        .bloodPressureSystolic,
+        .bloodPressureDiastolic,
+        .bloodGlucose,
+        
+        // Nutrition
+        .dietaryEnergyConsumed,
+        .dietaryProtein,
+        .dietaryCarbohydrates,
+        .dietaryFatTotal,
+        .dietaryWater,
+        .dietaryCaffeine,
+        
+        // Other
+        .numberOfTimesFallen,
+        .uvExposure,
+        .electrodermalActivity,
+        .peripheralPerfusionIndex,
+        
+        // Audio
+        .environmentalAudioExposure,
+        .headphoneAudioExposure,
+        
+        // Mobility
+        .walkingSpeed,
+        .walkingStepLength,
+        .walkingAsymmetryPercentage,
+        .walkingDoubleSupportPercentage,
+        .stairAscentSpeed,
+        .stairDescentSpeed,
+        .sixMinuteWalkTestDistance,
+    ]
+    
+    /// Build the set of HKObjectTypes to request read access for
+    private static var allReadTypes: Set<HKObjectType> {
+        var types = Set<HKObjectType>()
+        
+        for identifier in allQuantityTypes {
+            if let qType = HKObjectType.quantityType(forIdentifier: identifier) {
+                types.insert(qType)
+            }
+        }
+        
+        // Category types
+        if let sleepType = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) {
+            types.insert(sleepType)
+        }
+        
+        // iOS 16+ types
+        if #available(iOS 16.0, *) {
+            if let wristTemp = HKObjectType.quantityType(forIdentifier: .appleSleepingWristTemperature) {
+                types.insert(wristTemp)
+            }
+        }
+        
+        // iOS 17+ types
+        if #available(iOS 17.0, *) {
+            if let cardioFitness = HKObjectType.quantityType(forIdentifier: .vo2Max) {
+                types.insert(cardioFitness)
+            }
+        }
+        
+        return types
+    }
+    
     public func requestAuthorization(completion: @escaping (Bool) -> Void) {
         guard HKHealthStore.isHealthDataAvailable() else {
             completion(false)
             return
         }
         
-        // Define all the types we want to read
-        var typesToRead: Set<HKObjectType> = [
-            HKObjectType.quantityType(forIdentifier: .heartRateVariabilitySDNN)!,
-            HKObjectType.quantityType(forIdentifier: .restingHeartRate)!,
-            HKObjectType.quantityType(forIdentifier: .respiratoryRate)!,
-            HKObjectType.quantityType(forIdentifier: .oxygenSaturation)!,
-            HKObjectType.quantityType(forIdentifier: .activeEnergyBurned)!,
-            HKObjectType.quantityType(forIdentifier: .basalEnergyBurned)!,
-            HKObjectType.quantityType(forIdentifier: .heartRate)!,
-            HKObjectType.categoryType(forIdentifier: .sleepAnalysis)!
-        ]
-        
-        if #available(iOS 16.0, *) {
-            if let wristTemp = HKObjectType.quantityType(forIdentifier: .appleSleepingWristTemperature) {
-                typesToRead.insert(wristTemp)
-            }
-        }
-        
-        healthStore.requestAuthorization(toShare: nil, read: typesToRead) { success, error in
+        healthStore.requestAuthorization(toShare: nil, read: Self.allReadTypes) { success, error in
             DispatchQueue.main.async {
                 self.isAuthorized = success
                 completion(success)
@@ -48,15 +138,7 @@ public class HealthKitManager: ObservableObject {
     public func startObserving() {
         guard isAuthorized else { return }
         
-        let typesToObserve: [HKQuantityTypeIdentifier] = [
-            .heartRateVariabilitySDNN,
-            .restingHeartRate,
-            .activeEnergyBurned,
-            .respiratoryRate,
-            .oxygenSaturation
-        ]
-        
-        for identifier in typesToObserve {
+        for identifier in Self.allQuantityTypes {
             guard let sampleType = HKObjectType.quantityType(forIdentifier: identifier) else { continue }
             
             let query = HKObserverQuery(sampleType: sampleType, predicate: nil) { [weak self] query, completionHandler, error in
@@ -92,17 +174,49 @@ public class HealthKitManager: ObservableObject {
     
     public func forceSyncAll() {
         guard isAuthorized else { return }
-        let typesToObserve: [HKQuantityTypeIdentifier] = [
-            .heartRateVariabilitySDNN,
-            .restingHeartRate,
-            .activeEnergyBurned,
-            .respiratoryRate,
-            .oxygenSaturation
-        ]
-        for identifier in typesToObserve {
+        // First fetch any new data from HealthKit
+        for identifier in Self.allQuantityTypes {
             if let sampleType = HKObjectType.quantityType(forIdentifier: identifier) {
                 fetchLatestData(for: sampleType) {}
             }
+        }
+        // Also add iOS 16+ types
+        if #available(iOS 16.0, *) {
+            if let wristTemp = HKObjectType.quantityType(forIdentifier: .appleSleepingWristTemperature) {
+                fetchLatestData(for: wristTemp) {}
+            }
+        }
+        // Then send ALL stored data to the Mac
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            self.forceSendAllStoredData()
+        }
+    }
+    
+    /// Reads ALL samples from local CoreData and sends them to connected peers.
+    /// This ensures the Mac receives the full historical dataset.
+    public func forceSendAllStoredData() {
+        let context = CoreDataManager.shared.container.viewContext
+        let fetchRequest: NSFetchRequest<HealthSample> = NSFetchRequest(entityName: "HealthSample")
+        fetchRequest.sortDescriptors = [NSSortDescriptor(key: "endDate", ascending: false)]
+        
+        context.perform {
+            guard let allSamples = try? context.fetch(fetchRequest), !allSamples.isEmpty else {
+                print("No stored samples to send.")
+                return
+            }
+            
+            // Send in batches of 500 to avoid hitting MultipeerConnectivity size limits
+            let batchSize = 500
+            let batches = stride(from: 0, to: allSamples.count, by: batchSize).map {
+                Array(allSamples[$0..<min($0 + batchSize, allSamples.count)])
+            }
+            
+            for (index, batch) in batches.enumerated() {
+                SyncManager.shared.send(samples: batch)
+                print("Sent batch \(index + 1)/\(batches.count) (\(batch.count) samples)")
+            }
+            
+            print("Force-sent all \(allSamples.count) stored samples to Mac.")
         }
     }
     
@@ -156,12 +270,116 @@ public class HealthKitManager: ObservableObject {
     
     private func unit(for type: HKQuantityType) -> HKUnit {
         switch type.identifier {
-        case HKQuantityTypeIdentifier.heartRateVariabilitySDNN.rawValue: return HKUnit.secondUnit(with: .milli)
-        case HKQuantityTypeIdentifier.restingHeartRate.rawValue, HKQuantityTypeIdentifier.heartRate.rawValue: return HKUnit.count().unitDivided(by: HKUnit.minute())
-        case HKQuantityTypeIdentifier.respiratoryRate.rawValue: return HKUnit.count().unitDivided(by: HKUnit.minute())
-        case HKQuantityTypeIdentifier.oxygenSaturation.rawValue: return HKUnit.percent()
-        case HKQuantityTypeIdentifier.activeEnergyBurned.rawValue, HKQuantityTypeIdentifier.basalEnergyBurned.rawValue: return HKUnit.kilocalorie()
-        default: return HKUnit.count()
+        // Heart
+        case HKQuantityTypeIdentifier.heartRateVariabilitySDNN.rawValue:
+            return HKUnit.secondUnit(with: .milli)
+        case HKQuantityTypeIdentifier.restingHeartRate.rawValue,
+             HKQuantityTypeIdentifier.heartRate.rawValue,
+             HKQuantityTypeIdentifier.walkingHeartRateAverage.rawValue:
+            return HKUnit.count().unitDivided(by: HKUnit.minute())
+        case HKQuantityTypeIdentifier.heartRateRecoveryOneMinute.rawValue:
+            return HKUnit.count().unitDivided(by: HKUnit.minute())
+            
+        // Respiratory
+        case HKQuantityTypeIdentifier.respiratoryRate.rawValue:
+            return HKUnit.count().unitDivided(by: HKUnit.minute())
+        case HKQuantityTypeIdentifier.oxygenSaturation.rawValue:
+            return HKUnit.percent()
+        case HKQuantityTypeIdentifier.forcedExpiratoryVolume1.rawValue,
+             HKQuantityTypeIdentifier.forcedVitalCapacity.rawValue:
+            return HKUnit.liter()
+        case HKQuantityTypeIdentifier.peakExpiratoryFlowRate.rawValue:
+            return HKUnit.liter().unitDivided(by: HKUnit.minute())
+            
+        // Energy
+        case HKQuantityTypeIdentifier.activeEnergyBurned.rawValue,
+             HKQuantityTypeIdentifier.basalEnergyBurned.rawValue,
+             HKQuantityTypeIdentifier.dietaryEnergyConsumed.rawValue:
+            return HKUnit.kilocalorie()
+            
+        // Distance
+        case HKQuantityTypeIdentifier.distanceWalkingRunning.rawValue,
+             HKQuantityTypeIdentifier.distanceCycling.rawValue,
+             HKQuantityTypeIdentifier.distanceSwimming.rawValue,
+             HKQuantityTypeIdentifier.sixMinuteWalkTestDistance.rawValue:
+            return HKUnit.meter()
+            
+        // Counts
+        case HKQuantityTypeIdentifier.stepCount.rawValue,
+             HKQuantityTypeIdentifier.flightsClimbed.rawValue,
+             HKQuantityTypeIdentifier.swimmingStrokeCount.rawValue,
+             HKQuantityTypeIdentifier.numberOfTimesFallen.rawValue,
+             HKQuantityTypeIdentifier.nikeFuel.rawValue:
+            return HKUnit.count()
+            
+        // Time (minutes)
+        case HKQuantityTypeIdentifier.appleExerciseTime.rawValue,
+             HKQuantityTypeIdentifier.appleMoveTime.rawValue,
+             HKQuantityTypeIdentifier.appleStandTime.rawValue:
+            return HKUnit.minute()
+            
+        // Body
+        case HKQuantityTypeIdentifier.bodyMass.rawValue,
+             HKQuantityTypeIdentifier.leanBodyMass.rawValue:
+            return HKUnit.gramUnit(with: .kilo)
+        case HKQuantityTypeIdentifier.height.rawValue,
+             HKQuantityTypeIdentifier.waistCircumference.rawValue:
+            return HKUnit.meterUnit(with: .centi)
+        case HKQuantityTypeIdentifier.bodyMassIndex.rawValue:
+            return HKUnit.count()
+        case HKQuantityTypeIdentifier.bodyFatPercentage.rawValue:
+            return HKUnit.percent()
+            
+        // Vitals
+        case HKQuantityTypeIdentifier.bodyTemperature.rawValue:
+            return HKUnit.degreeCelsius()
+        case HKQuantityTypeIdentifier.bloodPressureSystolic.rawValue,
+             HKQuantityTypeIdentifier.bloodPressureDiastolic.rawValue:
+            return HKUnit.millimeterOfMercury()
+        case HKQuantityTypeIdentifier.bloodGlucose.rawValue:
+            return HKUnit.gramUnit(with: .milli).unitDivided(by: HKUnit.literUnit(with: .deci))
+            
+        // Nutrition
+        case HKQuantityTypeIdentifier.dietaryProtein.rawValue,
+             HKQuantityTypeIdentifier.dietaryCarbohydrates.rawValue,
+             HKQuantityTypeIdentifier.dietaryFatTotal.rawValue,
+             HKQuantityTypeIdentifier.dietaryCaffeine.rawValue:
+            return HKUnit.gram()
+        case HKQuantityTypeIdentifier.dietaryWater.rawValue:
+            return HKUnit.literUnit(with: .milli)
+            
+        // Audio
+        case HKQuantityTypeIdentifier.environmentalAudioExposure.rawValue,
+             HKQuantityTypeIdentifier.headphoneAudioExposure.rawValue:
+            return HKUnit.decibelAWeightedSoundPressureLevel()
+            
+        // Mobility
+        case HKQuantityTypeIdentifier.walkingSpeed.rawValue:
+            return HKUnit.meter().unitDivided(by: HKUnit.second())
+        case HKQuantityTypeIdentifier.walkingStepLength.rawValue:
+            return HKUnit.meterUnit(with: .centi)
+        case HKQuantityTypeIdentifier.walkingAsymmetryPercentage.rawValue,
+             HKQuantityTypeIdentifier.walkingDoubleSupportPercentage.rawValue,
+             HKQuantityTypeIdentifier.atrialFibrillationBurden.rawValue:
+            return HKUnit.percent()
+        case HKQuantityTypeIdentifier.stairAscentSpeed.rawValue,
+             HKQuantityTypeIdentifier.stairDescentSpeed.rawValue:
+            return HKUnit.meter().unitDivided(by: HKUnit.second())
+            
+        // VO2Max
+        case "HKQuantityTypeIdentifierVO2Max":
+            return HKUnit.literUnit(with: .milli).unitDivided(by: HKUnit.gramUnit(with: .kilo).unitMultiplied(by: HKUnit.minute()))
+            
+        // UV
+        case HKQuantityTypeIdentifier.uvExposure.rawValue:
+            return HKUnit.count()
+        case HKQuantityTypeIdentifier.electrodermalActivity.rawValue:
+            return HKUnit.siemen()
+        case HKQuantityTypeIdentifier.peripheralPerfusionIndex.rawValue:
+            return HKUnit.percent()
+            
+        default:
+            return HKUnit.count()
         }
     }
 }

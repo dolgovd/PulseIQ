@@ -10,22 +10,27 @@ struct ChartDataPoint: Identifiable {
     let value: Double
 }
 
-struct MetricType: Identifiable, Hashable, Equatable {
-    let id = UUID()
-    let name: String
-    let group: String
-}
+/// The 4 computed/pinned metrics always shown at the top
+let pinnedMetricTitles = ["Recovery", "Body Battery", "Exertion", "Sleep"]
 
-let allAvailableMetrics = [
-    MetricType(name: "Recovery", group: "Readiness"),
-    MetricType(name: "Sleep", group: "Readiness"),
-    MetricType(name: "Exertion", group: "Readiness"),
-    MetricType(name: "Body Battery", group: "Readiness"),
-    MetricType(name: "HRV", group: "Vitals"),
-    MetricType(name: "Resting HR", group: "Vitals"),
-    MetricType(name: "Respiratory Rate", group: "Vitals"),
-    MetricType(name: "SpO2", group: "Vitals")
-]
+/// Map a color name string to a SwiftUI Color
+func colorFromName(_ name: String) -> Color {
+    switch name {
+    case "red": return .red
+    case "blue": return .blue
+    case "green": return .green
+    case "orange": return .orange
+    case "yellow": return .yellow
+    case "purple": return .purple
+    case "cyan": return .cyan
+    case "teal": return .teal
+    case "indigo": return .indigo
+    case "mint": return .mint
+    case "pink": return .pink
+    case "brown": return .brown
+    default: return .gray
+    }
+}
 
 extension Array {
     func chunked(into size: Int) -> [[Element]] {
@@ -36,10 +41,10 @@ extension Array {
 }
 
 enum TimeFilter: String, CaseIterable {
-    case w1 = "1W"
-    case d30 = "30D"
-    case d60 = "60D"
-    case d90 = "90D"
+    case w1 = "7 Days"
+    case d30 = "30 Days"
+    case d60 = "60 Days"
+    case d90 = "90 Days"
     
     var timeInterval: TimeInterval {
         switch self {
@@ -73,21 +78,19 @@ public struct DashboardView: View {
     @State private var selectedMetricTitle: String? = "Recovery"
     @State private var showingDatePicker = false
     
-    @AppStorage("favoriteMetrics") private var favoritesData: Data = Data()
-    @State private var favorites: [String] = ["Recovery", "Sleep", "Exertion", "Body Battery", "HRV", "Resting HR", "Respiratory Rate", "SpO2"]
     @State private var draggedMetric: String?
     
-    private func saveFavorites() {
-        if let encoded = try? JSONEncoder().encode(favorites) {
-            favoritesData = encoded
-        }
+    /// Dynamically discover all unique HealthKit type identifiers present in CoreData
+    private var discoveredMetricTypes: [String] {
+        let allTypes = Set(samples.map { $0.type })
+        // Exclude types already used by pinned computed metrics (activeEnergy is used by Exertion)
+        let excludedTypes: Set<String> = [String.activeEnergyBurned]
+        let filtered = allTypes.subtracting(excludedTypes)
+        return filtered.sorted()
     }
     
-    private func loadFavorites() {
-        if let decoded = try? JSONDecoder().decode([String].self, from: favoritesData), !decoded.isEmpty {
-            favorites = decoded
-        }
-    }
+    // Favorites are no longer needed since pinned metrics are fixed
+    // and discovered metrics auto-populate
     
     // MARK: - Derived Metrics
     private var recoveryScore: Double {
@@ -179,17 +182,21 @@ public struct DashboardView: View {
     }
     
     private var currentChartConfiguration: ChartConfiguration? {
-        switch selectedMetricTitle {
+        guard let title = selectedMetricTitle else { return nil }
+        // Pinned computed metrics
+        switch title {
         case "Recovery": return ChartConfiguration(title: "Recovery", history: recoveryHistory, color: .green)
         case "Sleep": return ChartConfiguration(title: "Sleep", history: sleepHistory, color: .indigo)
         case "Exertion": return ChartConfiguration(title: "Exertion", history: exertionHistory, color: .orange)
         case "Body Battery": return ChartConfiguration(title: "Body Battery", history: bodyBatteryHistory, color: .cyan)
-        case "HRV": return ChartConfiguration(title: "HRV", history: hrvHistory, color: .red)
-        case "Resting HR": return ChartConfiguration(title: "Resting HR", history: restingHRHistory, color: .red)
-        case "Respiratory Rate": return ChartConfiguration(title: "Respiratory Rate", history: respRateHistory, color: .teal)
-        case "SpO2": return ChartConfiguration(title: "SpO2", history: spo2History, color: .blue)
-        default: return nil
+        default: break
         }
+        // Dynamic HealthKit metrics: title IS the HK type identifier
+        let info = HealthKitMetricInfo.info(for: title)
+        let history = samples
+            .filter { $0.type == title }
+            .map { ChartDataPoint(date: $0.endDate, value: $0.value * info.multiplier) }
+        return ChartConfiguration(title: info.displayName, history: history, color: colorFromName(info.colorName))
     }
     
     private func latestValue(for identifier: String, multiplier: Double = 1.0) -> Double? {
@@ -219,8 +226,9 @@ public struct DashboardView: View {
         }
     }
     
+    /// Card for pinned computed metrics
     @ViewBuilder
-    private func cardForMetric(_ title: String) -> some View {
+    private func pinnedCard(_ title: String) -> some View {
         switch title {
         case "Recovery":
             MetricCard(title: "Recovery", value: String(format: "%.0f%%", recoveryScore), icon: "bolt.heart.fill", color: recoveryScore > 66 ? .green : (recoveryScore > 33 ? .yellow : .red), isSelected: selectedMetricTitle == "Recovery") { toggleMetric("Recovery") }
@@ -230,17 +238,23 @@ public struct DashboardView: View {
             MetricCard(title: "Exertion", value: String(format: "%.1f", todayExertion), icon: "flame.fill", color: .orange, isSelected: selectedMetricTitle == "Exertion") { toggleMetric("Exertion") }
         case "Body Battery":
             MetricCard(title: "Body Battery", value: String(format: "%.0f", bodyBattery), icon: "battery.100.bolt", color: .cyan, isSelected: selectedMetricTitle == "Body Battery") { toggleMetric("Body Battery") }
-        case "HRV":
-            MetricCard(title: "HRV", value: formatLatest(type: .heartRateVariabilitySDNN, unit: "ms"), icon: "waveform.path.ecg", color: .red, isSelected: selectedMetricTitle == "HRV") { toggleMetric("HRV") }
-        case "Resting HR":
-            MetricCard(title: "Resting HR", value: formatLatest(type: .restingHeartRate, unit: "bpm"), icon: "heart.fill", color: .red, isSelected: selectedMetricTitle == "Resting HR") { toggleMetric("Resting HR") }
-        case "Respiratory Rate":
-            MetricCard(title: "Respiratory Rate", value: formatLatest(type: .respiratoryRate, unit: "rpm"), icon: "lungs.fill", color: .teal, isSelected: selectedMetricTitle == "Respiratory Rate") { toggleMetric("Respiratory Rate") }
-        case "SpO2":
-            MetricCard(title: "SpO2", value: formatLatest(type: .oxygenSaturation, unit: "%", multiplier: 100), icon: "o.circle.fill", color: .blue, isSelected: selectedMetricTitle == "SpO2") { toggleMetric("SpO2") }
         default:
             EmptyView()
         }
+    }
+    
+    /// Card for any dynamically-discovered HealthKit metric type
+    private func dynamicCard(for typeIdentifier: String) -> some View {
+        let info = HealthKitMetricInfo.info(for: typeIdentifier)
+        let color = colorFromName(info.colorName)
+        let valueStr = formatLatest(type: typeIdentifier, unit: info.unit, multiplier: info.multiplier)
+        return MetricCard(
+            title: info.displayName,
+            value: valueStr,
+            icon: info.icon,
+            color: color,
+            isSelected: selectedMetricTitle == typeIdentifier
+        ) { toggleMetric(typeIdentifier) }
     }
     
     public var body: some View {
@@ -260,36 +274,6 @@ public struct DashboardView: View {
                     HStack(alignment: .center) {
                         Text(Calendar.current.isDateInToday(selectedDate) ? "Today's Training Readiness" : "Training Readiness")
                             .font(.system(size: 32, weight: .bold, design: .rounded))
-                            .padding(.trailing, 8)
-                        
-                        Menu {
-                            ForEach(["Readiness", "Vitals"], id: \.self) { group in
-                                Menu(group) {
-                                    ForEach(allAvailableMetrics.filter { $0.group == group }) { metric in
-                                        Button {
-                                            if favorites.contains(metric.name) {
-                                                favorites.removeAll { $0 == metric.name }
-                                            } else {
-                                                favorites.append(metric.name)
-                                            }
-                                            saveFavorites()
-                                        } label: {
-                                            if favorites.contains(metric.name) {
-                                                Label(metric.name, systemImage: "checkmark")
-                                            } else {
-                                                Text(metric.name)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.title2)
-                                .foregroundColor(.secondary)
-                        }
-                        .menuStyle(.borderlessButton)
-                        .frame(width: 30)
                         
                         Spacer()
                         
@@ -328,25 +312,44 @@ public struct DashboardView: View {
                     }
                     .padding(.horizontal)
                     
-                    // MARK: - Dynamic Favorites Grid
-                    let chunks = favorites.chunked(into: 4)
-                    ForEach(chunks.indices, id: \.self) { i in
-                        let chunk = chunks[i]
-                        
-                        LazyVGrid(columns: columns, spacing: 20) {
-                            ForEach(chunk, id: \.self) { metric in
-                                cardForMetric(metric)
-                                    .onDrag {
-                                        draggedMetric = metric
-                                        return NSItemProvider(object: metric as NSString)
-                                    }
-                                    .onDrop(of: [.plainText], delegate: MetricDropDelegate(item: metric, items: $favorites, draggedItem: $draggedMetric, onDrop: saveFavorites))
-                            }
+                    // MARK: - Pinned Metrics (always on top)
+                    LazyVGrid(columns: columns, spacing: 20) {
+                        ForEach(pinnedMetricTitles, id: \.self) { title in
+                            pinnedCard(title)
                         }
-                        .padding(.horizontal)
+                    }
+                    .padding(.horizontal)
+                    
+                    // Chart for pinned metrics
+                    if let selected = selectedMetricTitle,
+                       pinnedMetricTitles.contains(selected),
+                       let config = currentChartConfiguration {
+                        DetailChartSection(config: config, selectedDate: selectedDate)
+                            .padding(.horizontal)
+                            .padding(.top, 8)
+                    }
+                    
+                    // MARK: - Discovered HealthKit Metrics
+                    if !discoveredMetricTypes.isEmpty {
+                        Text("Health Metrics")
+                            .font(.title2.bold())
+                            .padding(.horizontal)
+                            .padding(.top, 8)
                         
-                        if chunk.contains(selectedMetricTitle ?? "") {
-                            if let config = currentChartConfiguration {
+                        let metricChunks = discoveredMetricTypes.chunked(into: 4)
+                        ForEach(metricChunks.indices, id: \.self) { i in
+                            let chunk = metricChunks[i]
+                            
+                            LazyVGrid(columns: columns, spacing: 20) {
+                                ForEach(chunk, id: \.self) { typeId in
+                                    dynamicCard(for: typeId)
+                                }
+                            }
+                            .padding(.horizontal)
+                            
+                            if let selected = selectedMetricTitle,
+                               chunk.contains(selected),
+                               let config = currentChartConfiguration {
                                 DetailChartSection(config: config, selectedDate: selectedDate)
                                     .padding(.horizontal)
                                     .padding(.top, 8)
@@ -358,9 +361,6 @@ public struct DashboardView: View {
                 .padding(.vertical, 24)
             }
             .background(Color(NSColor.windowBackgroundColor))
-            .onAppear {
-                loadFavorites()
-            }
         }
     }
 }
@@ -445,20 +445,29 @@ struct DetailChartSection: View {
     @State private var filter: TimeFilter = .w1
     @State private var rawSelectedDate: Date? = nil
     
+    private var dateDomain: (start: Date, end: Date) {
+        let halfDuration = filter.timeInterval / 2
+        var startDate = selectedDate.addingTimeInterval(-halfDuration)
+        var endDate = selectedDate.addingTimeInterval(halfDuration)
+        
+        let maxDataDate = config.history.max(by: { $0.date < $1.date })?.date ?? Date()
+        
+        if endDate > maxDataDate {
+            endDate = maxDataDate
+            startDate = maxDataDate.addingTimeInterval(-filter.timeInterval)
+        }
+        
+        return (Calendar.current.startOfDay(for: startDate), Calendar.current.startOfDay(for: endDate))
+    }
+    
     var binnedHistory: [ChartDataPoint] {
-        let isToday = Calendar.current.isDateInToday(selectedDate)
-        var startDate = isToday ? selectedDate.addingTimeInterval(-filter.timeInterval) : selectedDate.addingTimeInterval(-filter.timeInterval / 2)
-        var endDate = isToday ? selectedDate : selectedDate.addingTimeInterval(filter.timeInterval / 2)
-        
+        let domain = dateDomain
         let calendar = Calendar.current
-        startDate = calendar.startOfDay(for: startDate)
-        endDate = calendar.startOfDay(for: endDate)
-        
-        let inRange = config.history.filter { $0.date >= startDate && $0.date <= endDate }
+        let inRange = config.history.filter { calendar.startOfDay(for: $0.date) >= domain.start && calendar.startOfDay(for: $0.date) <= domain.end }
         
         let grouping: (Date) -> Date
         // Bin by day
-        grouping = { date in calendar.startOfDay(for: date) }
+        grouping = { date in Calendar.current.startOfDay(for: date) }
         
         let grouped = Dictionary(grouping: inRange, by: { grouping($0.date) })
         let binned = grouped.map { (key, value) -> ChartDataPoint in
@@ -555,13 +564,8 @@ struct DetailChartSection: View {
                     }
                 }
                 .chartXScale(domain: {
-                    let isToday = Calendar.current.isDateInToday(selectedDate)
-                    var startDate = isToday ? selectedDate.addingTimeInterval(-filter.timeInterval) : selectedDate.addingTimeInterval(-filter.timeInterval / 2)
-                    var endDate = isToday ? selectedDate : selectedDate.addingTimeInterval(filter.timeInterval / 2)
-                    
-                    startDate = Calendar.current.startOfDay(for: startDate)
-                    endDate = Calendar.current.startOfDay(for: endDate)
-                    return startDate...endDate
+                    let domain = dateDomain
+                    return domain.start...domain.end
                 }())
                 .chartOverlay { proxy in
                     GeometryReader { geo in
@@ -581,19 +585,23 @@ struct DetailChartSection: View {
                            let closestData = findClosest(to: hoverDate, in: binnedHistory),
                            let xPos = proxy.position(forX: closestData.date) {
                             
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(closestData.date, format: .dateTime.month().day().hour().minute())
-                                    .font(.caption)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(closestData.date, format: .dateTime.month().day())
+                                    .font(.subheadline)
                                     .foregroundColor(.secondary)
                                 Text(String(format: "%.1f", closestData.value))
-                                    .font(.headline)
+                                    .font(.title3.bold())
                                     .foregroundColor(config.color)
                             }
-                            .padding(10)
-                            .background(Color(NSColor.windowBackgroundColor))
-                            .cornerRadius(8)
-                            .shadow(color: Color.black.opacity(0.2), radius: 5, x: 0, y: 2)
-                            .position(x: min(max(xPos, 50), geo.size.width - 50), y: 30)
+                            .padding(12)
+                            .background(Color(NSColor.controlBackgroundColor))
+                            .cornerRadius(10)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color.gray.opacity(0.4), lineWidth: 1)
+                            )
+                            .shadow(color: Color.black.opacity(0.3), radius: 6, x: 0, y: 3)
+                            .position(x: min(max(xPos, 60), geo.size.width - 60), y: 35)
                         }
                     }
                 }
