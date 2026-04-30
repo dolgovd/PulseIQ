@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_pulseiq-sync._tcp</string>
+	</array>
+	<key>NSHealthShareUsageDescription</key>
+	<string>PulseIQ needs access to your health data to calculate your readiness, exertion, and recovery metrics.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>PulseIQ needs access to write data to HealthKit if requested.</string>
+</dict>
+</plist>

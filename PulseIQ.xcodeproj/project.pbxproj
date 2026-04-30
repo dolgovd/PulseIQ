@@ -10,9 +10,22 @@
 		322B98412F9BCD9500ED88AA /* PulseIQ.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PulseIQ.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		322B985C2F9BD15B00ED88AA /* Exceptions for "PulseIQ" folder in "PulseIQ" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 322B98402F9BCD9500ED88AA /* PulseIQ */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		322B98432F9BCD9500ED88AA /* PulseIQ */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				322B985C2F9BD15B00ED88AA /* Exceptions for "PulseIQ" folder in "PulseIQ" target */,
+			);
 			path = PulseIQ;
 			sourceTree = "<group>";
 		};
@@ -246,6 +259,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = PulseIQ/PulseIQ_iOS.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = PulseIQ/PulseIQ_iOS.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PulseIQ/PulseIQ_macOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = NN8N8XMU9P;
@@ -254,6 +270,10 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PulseIQ/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "PulseIQ needs access to read your health metrics";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "PulseIQ uses local network to discover your Mac";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -290,6 +310,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = PulseIQ/PulseIQ_iOS.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = PulseIQ/PulseIQ_iOS.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PulseIQ/PulseIQ_macOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = NN8N8XMU9P;
@@ -298,6 +321,10 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PulseIQ/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "PulseIQ needs access to read your health metrics";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "PulseIQ uses local network to discover your Mac";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
