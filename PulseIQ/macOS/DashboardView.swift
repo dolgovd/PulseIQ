@@ -3,6 +3,7 @@ import SwiftUI
 import CoreData
 import Charts
 import UniformTypeIdentifiers
+import MultipeerConnectivity
 
 struct ChartDataPoint: Identifiable {
     let id = UUID()
@@ -63,6 +64,7 @@ struct ChartConfiguration {
 }
 
 public struct DashboardView: View {
+    @EnvironmentObject private var syncManager: SyncManager
     @Environment(\.managedObjectContext) private var viewContext
     
     @FetchRequest(
@@ -80,13 +82,28 @@ public struct DashboardView: View {
     
     @State private var draggedMetric: String?
     
-    /// Dynamically discover all unique HealthKit type identifiers present in CoreData
-    private var discoveredMetricTypes: [String] {
+    /// Dynamically discover all unique HealthKit type identifiers present in CoreData,
+    /// grouped by their Apple Health categories.
+    private var groupedDiscoveredMetrics: [String: [String]] {
         let allTypes = Set(samples.map { $0.type })
         // Exclude types already used by pinned computed metrics (activeEnergy is used by Exertion)
         let excludedTypes: Set<String> = [String.activeEnergyBurned]
         let filtered = allTypes.subtracting(excludedTypes)
-        return filtered.sorted()
+        
+        var grouped: [String: [String]] = [:]
+        for typeId in filtered {
+            let info = HealthKitMetricInfo.info(for: typeId)
+            grouped[info.category, default: []].append(typeId)
+        }
+        
+        // Sort types within each group
+        for (category, types) in grouped {
+            grouped[category] = types.sorted {
+                HealthKitMetricInfo.info(for: $0).displayName < HealthKitMetricInfo.info(for: $1).displayName
+            }
+        }
+        
+        return grouped
     }
     
     // Favorites are no longer needed since pinned metrics are fixed
@@ -107,6 +124,13 @@ public struct DashboardView: View {
     
     private var bodyBattery: Double {
         return AlgorithmManager.shared.calculateBodyBattery(recoveryScore: recoveryScore, exertionScore: todayExertion)
+    }
+    
+    private var sleepScore: Double {
+        let calendar = Calendar.current
+        let daySamples = samples.filter { $0.type == "HKCategoryTypeIdentifierSleepAnalysis" && calendar.isDate($0.endDate, inSameDayAs: selectedDate) }
+        let totalHours = daySamples.reduce(0) { $0 + $1.value }
+        return totalHours > 0 ? totalHours : 7.5 // Fallback to 7.5 if no data
     }
     
     // MARK: - History Calculations
@@ -154,12 +178,17 @@ public struct DashboardView: View {
     }
     
     private var sleepHistory: [ChartDataPoint] {
-        var trend: [ChartDataPoint] = []
         let calendar = Calendar.current
+        var trend: [ChartDataPoint] = []
+        let allSamples = samples.filter { $0.type == "HKCategoryTypeIdentifierSleepAnalysis" }
+        
         for i in 0..<90 {
             if let day = calendar.date(byAdding: .day, value: -i, to: Date()) {
-                let val = Double.random(in: 6.5...8.5)
-                trend.append(ChartDataPoint(date: day, value: val))
+                let daySamples = allSamples.filter { calendar.isDate($0.endDate, inSameDayAs: day) }
+                let totalHours = daySamples.reduce(0) { $0 + $1.value }
+                if totalHours > 0 {
+                    trend.append(ChartDataPoint(date: day, value: totalHours))
+                }
             }
         }
         return trend
@@ -229,11 +258,15 @@ public struct DashboardView: View {
     /// Card for pinned computed metrics
     @ViewBuilder
     private func pinnedCard(_ title: String) -> some View {
+        let sleepHours = Int(sleepScore)
+        let sleepMinutes = Int((sleepScore - Double(sleepHours)) * 60)
+        let sleepStr = sleepHours > 0 ? "\(sleepHours)h \(sleepMinutes)m" : "--h"
+        
         switch title {
         case "Recovery":
             MetricCard(title: "Recovery", value: String(format: "%.0f%%", recoveryScore), icon: "bolt.heart.fill", color: recoveryScore > 66 ? .green : (recoveryScore > 33 ? .yellow : .red), isSelected: selectedMetricTitle == "Recovery") { toggleMetric("Recovery") }
         case "Sleep":
-            MetricCard(title: "Sleep", value: "7h 30m", icon: "bed.double.fill", color: .indigo, isSelected: selectedMetricTitle == "Sleep") { toggleMetric("Sleep") }
+            MetricCard(title: "Sleep", value: sleepStr, icon: "bed.double.fill", color: .indigo, isSelected: selectedMetricTitle == "Sleep") { toggleMetric("Sleep") }
         case "Exertion":
             MetricCard(title: "Exertion", value: String(format: "%.1f", todayExertion), icon: "flame.fill", color: .orange, isSelected: selectedMetricTitle == "Exertion") { toggleMetric("Exertion") }
         case "Body Battery":
@@ -276,6 +309,53 @@ public struct DashboardView: View {
                             .font(.system(size: 32, weight: .bold, design: .rounded))
                         
                         Spacer()
+                        
+                        // Connection Status Indicator
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(syncManager.isConnected ? Color.green : (syncManager.nearbyPeers.isEmpty ? Color.red : Color.orange))
+                                .frame(width: 8, height: 8)
+                            
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(syncManager.isConnected ? "Connected to iPhone" : (syncManager.nearbyPeers.isEmpty ? "Disconnected" : "Found Device..."))
+                                    .font(.caption.bold())
+                                
+                                if !syncManager.isConnected && !syncManager.nearbyPeers.isEmpty {
+                                    Text(syncManager.nearbyPeers.first?.displayName ?? "")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.secondary.opacity(0.1))
+                        .cornerRadius(20)
+                        .onTapGesture {
+                            // Reset and restart discovery
+                            syncManager.reset()
+                        }
+                        .padding(.trailing, 8)
+                        
+                        // Full Sync Button
+                        Button(action: {
+                            syncManager.requestFullSync()
+                        }) {
+                            Label("Sync", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.subheadline.bold())
+                        }
+                        .disabled(!syncManager.isConnected)
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color(NSColor.controlBackgroundColor))
+                        .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                        )
+                        .padding(.trailing, 8)
                         
                         if !Calendar.current.isDateInToday(selectedDate) {
                             Button("Today") {
@@ -329,30 +409,37 @@ public struct DashboardView: View {
                             .padding(.top, 8)
                     }
                     
-                    // MARK: - Discovered HealthKit Metrics
-                    if !discoveredMetricTypes.isEmpty {
-                        Text("Health Metrics")
-                            .font(.title2.bold())
-                            .padding(.horizontal)
-                            .padding(.top, 8)
-                        
-                        let metricChunks = discoveredMetricTypes.chunked(into: 4)
-                        ForEach(metricChunks.indices, id: \.self) { i in
-                            let chunk = metricChunks[i]
+                    // MARK: - Discovered HealthKit Metrics (Grouped)
+                    let grouped = groupedDiscoveredMetrics
+                    let sortedCategories = HealthKitMetricInfo.categoryOrder.filter { grouped[$0] != nil }
+                    
+                    ForEach(sortedCategories, id: \.self) { category in
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text(category)
+                                .font(.title2.bold())
+                                .padding(.horizontal)
+                                .padding(.top, 16)
                             
-                            LazyVGrid(columns: columns, spacing: 20) {
-                                ForEach(chunk, id: \.self) { typeId in
-                                    dynamicCard(for: typeId)
-                                }
-                            }
-                            .padding(.horizontal)
-                            
-                            if let selected = selectedMetricTitle,
-                               chunk.contains(selected),
-                               let config = currentChartConfiguration {
-                                DetailChartSection(config: config, selectedDate: selectedDate)
+                            if let typeIds = grouped[category] {
+                                let metricChunks = typeIds.chunked(into: 4)
+                                ForEach(metricChunks.indices, id: \.self) { i in
+                                    let chunk = metricChunks[i]
+                                    
+                                    LazyVGrid(columns: columns, spacing: 20) {
+                                        ForEach(chunk, id: \.self) { typeId in
+                                            dynamicCard(for: typeId)
+                                        }
+                                    }
                                     .padding(.horizontal)
-                                    .padding(.top, 8)
+                                    
+                                    if let selected = selectedMetricTitle,
+                                       chunk.contains(selected),
+                                       let config = currentChartConfiguration {
+                                        DetailChartSection(config: config, selectedDate: selectedDate)
+                                            .padding(.horizontal)
+                                            .padding(.top, 8)
+                                    }
+                                }
                             }
                         }
                     }

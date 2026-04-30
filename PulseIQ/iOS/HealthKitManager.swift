@@ -10,7 +10,11 @@ public class HealthKitManager: ObservableObject {
     
     @Published public var isAuthorized = false
     
-    private init() {}
+    private init() {
+        NotificationCenter.default.addObserver(forName: Notification.Name("TriggerFullSync"), object: nil, queue: .main) { _ in
+            self.forceSyncAll()
+        }
+    }
     
     // MARK: - All supported HealthKit quantity types
     
@@ -174,22 +178,63 @@ public class HealthKitManager: ObservableObject {
     
     public func forceSyncAll() {
         guard isAuthorized else { return }
-        // First fetch any new data from HealthKit
+        
+        // Fetch all quantity types
         for identifier in Self.allQuantityTypes {
             if let sampleType = HKObjectType.quantityType(forIdentifier: identifier) {
                 fetchLatestData(for: sampleType) {}
             }
         }
+        
+        // Fetch Sleep
+        if let sleepType = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) {
+            fetchSleepData(for: sleepType)
+        }
+        
         // Also add iOS 16+ types
         if #available(iOS 16.0, *) {
             if let wristTemp = HKObjectType.quantityType(forIdentifier: .appleSleepingWristTemperature) {
                 fetchLatestData(for: wristTemp) {}
             }
         }
+        
         // Then send ALL stored data to the Mac
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
             self.forceSendAllStoredData()
         }
+    }
+    
+    private func fetchSleepData(for type: HKCategoryType) {
+        let lastDate = Calendar.current.date(byAdding: .day, value: -90, to: Date())!
+        let predicate = HKQuery.predicateForSamples(withStart: lastDate, end: Date(), options: .strictStartDate)
+        let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
+        
+        let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: 1000, sortDescriptors: [sortDescriptor]) { _, samples, error in
+            guard let categorySamples = samples as? [HKCategorySample], error == nil else { return }
+            
+            let context = CoreDataManager.shared.container.newBackgroundContext()
+            context.perform {
+                var newSamples: [HealthSample] = []
+                for sample in categorySamples {
+                    let healthSample = HealthSample(context: context)
+                    healthSample.id = sample.uuid
+                    healthSample.type = "HKCategoryTypeIdentifierSleepAnalysis"
+                    
+                    // For sleep, we store duration in hours as the value
+                    let duration = sample.endDate.timeIntervalSince(sample.startDate) / 3600.0
+                    healthSample.value = duration
+                    healthSample.startDate = sample.startDate
+                    healthSample.endDate = sample.endDate
+                    newSamples.append(healthSample)
+                }
+                
+                if context.hasChanges {
+                    try? context.save()
+                    SyncManager.shared.send(samples: newSamples)
+                }
+            }
+        }
+        healthStore.execute(query)
     }
     
     /// Reads ALL samples from local CoreData and sends them to connected peers.

@@ -5,7 +5,10 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_pulseiq-sync._tcp</string>
+		<string>_pulseiq-sync._udp</string>
 	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>PulseIQ uses the local network to synchronize health data between your iPhone and Mac.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>PulseIQ needs access to your health data to calculate your readiness, exertion, and recovery metrics.</string>
 	<key>NSHealthUpdateUsageDescription</key>

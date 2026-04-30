@@ -32,17 +32,27 @@ struct IOSBridgeView: View {
                     .fill(syncManager.isConnected ? Color.green.opacity(0.15) : Color.orange.opacity(0.15))
                     .frame(width: 140, height: 140)
                 
-                Image(systemName: syncManager.isConnected ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right")
+                Image(systemName: syncManager.isConnected ? "checkmark.circle.fill" : (syncManager.nearbyPeers.isEmpty ? "antenna.radiowaves.left.and.right" : "macmini.fill"))
                     .resizable()
                     .scaledToFit()
                     .frame(width: 64, height: 64)
-                    .foregroundColor(syncManager.isConnected ? .green : .orange)
+                    .foregroundColor(syncManager.isConnected ? .green : (syncManager.nearbyPeers.isEmpty ? .orange : .blue))
                     .symbolEffect(.pulse, options: .repeating, isActive: !syncManager.isConnected)
+                    .onTapGesture {
+                        syncManager.reset()
+                    }
             }
             
             VStack(spacing: 8) {
-                Text(syncManager.isConnected ? "Connected to Mac" : "Searching for Mac…")
+                Text(syncManager.isConnected ? "Connected to Mac" : (syncManager.nearbyPeers.isEmpty ? "Searching for Mac…" : "Mac Found!"))
                     .font(.system(size: 28, weight: .bold, design: .rounded))
+                
+                if !syncManager.isConnected && !syncManager.nearbyPeers.isEmpty {
+                    Text("Found: \(syncManager.nearbyPeers.first?.displayName ?? "Unknown")")
+                        .font(.headline)
+                        .foregroundColor(.orange)
+                        .padding(.bottom, 4)
+                }
                 
                 if syncManager.isConnected {
                     ForEach(syncManager.connectedPeers, id: \.self) { peer in
@@ -59,7 +69,9 @@ struct IOSBridgeView: View {
                 Text(healthKitManager.isAuthorized
                      ? (syncManager.isConnected
                         ? "Syncing HealthKit data to macOS via local network."
-                        : "Both devices must be on the **same WiFi network**.\nUSB cable alone is not enough for sync.")
+                        : (syncManager.nearbyPeers.isEmpty 
+                           ? "Both devices must be on the **same WiFi network**.\nUSB cable alone is not enough for sync."
+                           : "Attempting to establish a secure connection..."))
                      : "PulseIQ requires HealthKit access to sync your metrics.")
                     .font(.callout)
                     .foregroundColor(.secondary)
