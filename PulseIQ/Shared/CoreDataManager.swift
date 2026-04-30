@@ -1,8 +1,8 @@
 import CoreData
 import Foundation
 
-public class CoreDataManager {
-    public static let shared = CoreDataManager()
+public class CoreDataManager: Sendable {
+    nonisolated public static let shared = CoreDataManager()
     public let container: NSPersistentContainer
 
     private init() {

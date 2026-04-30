@@ -292,11 +292,19 @@ public class HealthKitManager: ObservableObject {
             
             context.perform {
                 var newSamples: [HealthSample] = []
+                let unit = self.unit(for: type)
+                
                 for sample in quantitySamples {
+                    // Safety check: Ensure the quantity is compatible with the unit before conversion
+                    guard sample.quantity.is(compatibleWith: unit) else {
+                        print("HealthKitManager: Skipping sample \(sample.uuid) - Incompatible unit \(unit.unitString) for type \(type.identifier)")
+                        continue
+                    }
+                    
                     let healthSample = HealthSample(context: context)
                     healthSample.id = sample.uuid
                     healthSample.type = sample.sampleType.identifier
-                    healthSample.value = sample.quantity.doubleValue(for: self.unit(for: type))
+                    healthSample.value = sample.quantity.doubleValue(for: unit)
                     healthSample.startDate = sample.startDate
                     healthSample.endDate = sample.endDate
                     newSamples.append(healthSample)
@@ -376,7 +384,8 @@ public class HealthKitManager: ObservableObject {
             return HKUnit.percent()
             
         // Vitals
-        case HKQuantityTypeIdentifier.bodyTemperature.rawValue:
+        case HKQuantityTypeIdentifier.bodyTemperature.rawValue,
+             "HKQuantityTypeIdentifierAppleSleepingWristTemperature":
             return HKUnit.degreeCelsius()
         case HKQuantityTypeIdentifier.bloodPressureSystolic.rawValue,
              HKQuantityTypeIdentifier.bloodPressureDiastolic.rawValue:

@@ -32,15 +32,21 @@ struct IOSBridgeView: View {
                     .fill(syncManager.isConnected ? Color.green.opacity(0.15) : Color.orange.opacity(0.15))
                     .frame(width: 140, height: 140)
                 
-                Image(systemName: syncManager.isConnected ? "checkmark.circle.fill" : (syncManager.nearbyPeers.isEmpty ? "antenna.radiowaves.left.and.right" : "macmini.fill"))
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 64, height: 64)
-                    .foregroundColor(syncManager.isConnected ? .green : (syncManager.nearbyPeers.isEmpty ? .orange : .blue))
-                    .symbolEffect(.pulse, options: .repeating, isActive: !syncManager.isConnected)
-                    .onTapGesture {
-                        syncManager.reset()
-                    }
+                if syncManager.isSyncing {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                        .tint(syncManager.isConnected ? .green : .orange)
+                } else {
+                    Image(systemName: syncManager.isConnected ? "checkmark.circle.fill" : (syncManager.nearbyPeers.isEmpty ? "antenna.radiowaves.left.and.right" : "macmini.fill"))
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 64, height: 64)
+                        .foregroundColor(syncManager.isConnected ? .green : (syncManager.nearbyPeers.isEmpty ? .orange : .blue))
+                        .symbolEffect(.pulse, options: .repeating, isActive: !syncManager.isConnected)
+                        .onTapGesture {
+                            syncManager.reset()
+                        }
+                }
             }
             
             VStack(spacing: 8) {

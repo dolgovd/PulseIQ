@@ -4,6 +4,7 @@ import CoreData
 import Charts
 import UniformTypeIdentifiers
 import MultipeerConnectivity
+import Combine
 
 struct ChartDataPoint: Identifiable {
     let id = UUID()
@@ -63,6 +64,184 @@ struct ChartConfiguration {
     var color: Color
 }
 
+@MainActor
+class DashboardViewModel: ObservableObject {
+    @Published var recoveryScore: Double = 50.0
+    @Published var todayExertion: Double = 0.0
+    @Published var bodyBattery: Double = 50.0
+    @Published var sleepScore: Double = 7.5
+    
+    @Published var recoveryHistory: [ChartDataPoint] = []
+    @Published var exertionHistory: [ChartDataPoint] = []
+    @Published var bodyBatteryHistory: [ChartDataPoint] = []
+    @Published var sleepHistory: [ChartDataPoint] = []
+    
+    @Published var groupedDiscoveredMetrics: [String: [String]] = [:]
+    
+    @Published var isCalculating = false
+    
+    private var lastSampleCount = 0
+    private var lastSelectedDate: Date?
+    
+    func updateIfNeeded(date: Date) {
+        // Debounce: only update if count changes or date changes
+        // Since we don't pass samples anymore, we rely on the Core Data fetch in the task
+        calculateMetrics(date: date)
+    }
+    
+    private func calculateMetrics(date: Date) {
+        isCalculating = true
+        
+        // Move to background thread and fetch data there to keep main thread free
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let calendar = Calendar.current
+            let context = CoreDataManager.shared.container.newBackgroundContext()
+            
+            // 1. Fetch only the last 90 days of data to keep memory/CPU low
+            let ninetyDaysAgo = calendar.date(byAdding: .day, value: -90, to: Date()) ?? Date.distantPast
+            let fetchRequest: NSFetchRequest<HealthSample> = NSFetchRequest(entityName: "HealthSample")
+            fetchRequest.predicate = NSPredicate(format: "endDate >= %@", ninetyDaysAgo as NSDate)
+            
+            guard let samples = try? context.fetch(fetchRequest) else {
+                await MainActor.run { [weak self] in
+                    self?.isCalculating = false
+                }
+                return
+            }
+            
+            // Convert to simple DTOs
+            let dtos = samples.map { SyncPayload.SampleDto(id: $0.id, type: $0.type, value: $0.value, startDate: $0.startDate, endDate: $0.endDate) }
+            
+            // Local constants to avoid any cross-isolation issues with static strings
+            let hrvType = "HKQuantityTypeIdentifierHeartRateVariabilitySDNN"
+            let rhrType = "HKQuantityTypeIdentifierRestingHeartRate"
+            let energyType = "HKQuantityTypeIdentifierActiveEnergyBurned"
+            let sleepType = "HKCategoryTypeIdentifierSleepAnalysis"
+            
+            func calculateRecoveryLocal(samples: [SyncPayload.SampleDto], date: Date) -> Double {
+                let thirtyDaysAgo = calendar.date(byAdding: .day, value: -30, to: date) ?? Date.distantPast
+                let hrvSamples = samples.filter { $0.type == hrvType }
+                let rhrSamples = samples.filter { $0.type == rhrType }
+                
+                let pastHRVs = hrvSamples.filter { $0.endDate >= thirtyDaysAgo && $0.endDate < calendar.startOfDay(for: date) && $0.value.isFinite }
+                let baselineHRV = pastHRVs.isEmpty ? 50.0 : pastHRVs.reduce(0) { $0 + $1.value } / Double(pastHRVs.count)
+                
+                let pastRHRs = rhrSamples.filter { $0.endDate >= thirtyDaysAgo && $0.endDate < calendar.startOfDay(for: date) && $0.value.isFinite }
+                let baselineRHR = pastRHRs.isEmpty ? 60.0 : pastRHRs.reduce(0) { $0 + $1.value } / Double(pastRHRs.count)
+                
+                let latestHRV = hrvSamples.first(where: { calendar.isDate($0.endDate, inSameDayAs: date) })?.value
+                let latestRHR = rhrSamples.first(where: { calendar.isDate($0.endDate, inSameDayAs: date) })?.value
+                
+                guard latestHRV != nil || latestRHR != nil else { return 50.0 }
+                
+                var hrvScore = 0.5
+                var rhrScore = 0.5
+                var factorsCount = 0.0
+                
+                if let hrv = latestHRV {
+                    let ratio = hrv / baselineHRV
+                    hrvScore = min(max((ratio - 0.8) / 0.4, 0.0), 1.0)
+                    factorsCount += 1
+                }
+                if let rhr = latestRHR {
+                    let ratio = baselineRHR / rhr
+                    rhrScore = min(max((ratio - 0.8) / 0.4, 0.0), 1.0)
+                    factorsCount += 1
+                }
+                
+                let totalScore = factorsCount > 0 ? (hrvScore + rhrScore + 0.5) / (factorsCount + 1) : 0.5
+                return min(max(totalScore * 100.0, 1.0), 100.0)
+            }
+
+            let recovery = calculateRecoveryLocal(samples: dtos, date: date)
+            
+            let todayEnergy = dtos
+                .filter { $0.type == energyType && calendar.isDate($0.endDate, inSameDayAs: date) }
+                .reduce(0) { $0 + $1.value }
+            let exertion = (todayEnergy / 1000.0) * 10.0
+            
+            let battery = min(max(recovery - (exertion * 5.0), 5.0), 100.0)
+            
+            let sleepSamples = dtos.filter { $0.type == sleepType && calendar.isDate($0.endDate, inSameDayAs: date) }
+            let sleepHrs = sleepSamples.reduce(0) { $0 + $1.value }
+            let finalSleep = sleepHrs > 0 ? sleepHrs : 7.5
+            
+            var recTrend: [ChartDataPoint] = []
+            var exeTrend: [ChartDataPoint] = []
+            var batTrend: [ChartDataPoint] = []
+            var slpTrend: [ChartDataPoint] = []
+            
+            let energySamples = dtos.filter { $0.type == energyType }
+            let allSleepSamples = dtos.filter { $0.type == sleepType }
+            
+            for i in 0..<90 {
+                guard let day = calendar.date(byAdding: .day, value: -i, to: Date()) else { continue }
+                
+                let rec = calculateRecoveryLocal(samples: dtos, date: day)
+                recTrend.append(ChartDataPoint(date: day, value: rec))
+                
+                let energy = energySamples
+                    .filter { calendar.isDate($0.endDate, inSameDayAs: day) }
+                    .reduce(0) { $0 + $1.value }
+                let exe = (energy / 1000.0) * 10.0
+                exeTrend.append(ChartDataPoint(date: day, value: exe))
+                
+                let bat = min(max(rec - (exe * 5.0), 5.0), 100.0)
+                batTrend.append(ChartDataPoint(date: day, value: bat))
+                
+                let daySleep = allSleepSamples.filter { calendar.isDate($0.endDate, inSameDayAs: day) }
+                let hrs = daySleep.reduce(0) { $0 + $1.value }
+                if hrs > 0 {
+                    slpTrend.append(ChartDataPoint(date: day, value: hrs))
+                }
+            }
+            
+            // 3. Dynamic Metric Grouping
+            let allTypes = Set(dtos.map { $0.type })
+            let excludedTypes: Set<String> = [energyType]
+            let filtered = allTypes.subtracting(excludedTypes)
+            
+            var grouped: [String: [String]] = [:]
+            for typeId in filtered {
+                let info = HealthKitMetricInfo.info(for: typeId)
+                grouped[info.category, default: []].append(typeId)
+            }
+            for (category, types) in grouped {
+                grouped[category] = types.sorted {
+                    HealthKitMetricInfo.info(for: $0).displayName < HealthKitMetricInfo.info(for: $1).displayName
+                }
+            }
+            
+            // Capture final results into immutable constants for safe transfer to Main Actor
+            let resRecovery = recovery
+            let resExertion = exertion
+            let resBattery = battery
+            let resSleep = finalSleep
+            let resRecTrend = recTrend
+            let resExeTrend = exeTrend
+            let resBatTrend = batTrend
+            let resSlpTrend = slpTrend
+            let resGrouped = grouped
+            
+            await MainActor.run { [weak self] in
+                guard let self = self else { return }
+                self.recoveryScore = resRecovery
+                self.todayExertion = resExertion
+                self.bodyBattery = resBattery
+                self.sleepScore = resSleep
+                
+                self.recoveryHistory = resRecTrend
+                self.exertionHistory = resExeTrend
+                self.bodyBatteryHistory = resBatTrend
+                self.sleepHistory = resSlpTrend
+                
+                self.groupedDiscoveredMetrics = resGrouped
+                self.isCalculating = false
+            }
+        }
+    }
+}
+
 public struct DashboardView: View {
     @EnvironmentObject private var syncManager: SyncManager
     @Environment(\.managedObjectContext) private var viewContext
@@ -73,7 +252,11 @@ public struct DashboardView: View {
         animation: .default)
     private var samples: FetchedResults<HealthSample>
     
-    let columns = Array(repeating: GridItem(.flexible(), spacing: 20), count: 4)
+    @StateObject private var viewModel = DashboardViewModel()
+    
+    let columns = [
+        GridItem(.adaptive(minimum: 350, maximum: .infinity), spacing: 20)
+    ]
     
     @State private var selectedNav: String? = "overview"
     @State private var selectedDate: Date = Date()
@@ -82,142 +265,20 @@ public struct DashboardView: View {
     
     @State private var draggedMetric: String?
     
-    /// Dynamically discover all unique HealthKit type identifiers present in CoreData,
-    /// grouped by their Apple Health categories.
-    private var groupedDiscoveredMetrics: [String: [String]] {
-        let allTypes = Set(samples.map { $0.type })
-        // Exclude types already used by pinned computed metrics (activeEnergy is used by Exertion)
-        let excludedTypes: Set<String> = [String.activeEnergyBurned]
-        let filtered = allTypes.subtracting(excludedTypes)
-        
-        var grouped: [String: [String]] = [:]
-        for typeId in filtered {
-            let info = HealthKitMetricInfo.info(for: typeId)
-            grouped[info.category, default: []].append(typeId)
-        }
-        
-        // Sort types within each group
-        for (category, types) in grouped {
-            grouped[category] = types.sorted {
-                HealthKitMetricInfo.info(for: $0).displayName < HealthKitMetricInfo.info(for: $1).displayName
-            }
-        }
-        
-        return grouped
-    }
-    
     // Favorites are no longer needed since pinned metrics are fixed
     // and discovered metrics auto-populate
     
     // MARK: - Derived Metrics
-    private var recoveryScore: Double {
-        return AlgorithmManager.shared.calculateRecovery(samples: Array(samples), date: selectedDate, sleepHours: 7.5)
-    }
-    
-    private var todayExertion: Double {
-        let calendar = Calendar.current
-        let todayEnergy = samples
-            .filter { $0.type == String.activeEnergyBurned && calendar.isDate($0.endDate, inSameDayAs: selectedDate) }
-            .reduce(0) { $0 + $1.value }
-        return AlgorithmManager.shared.calculateExertion(activeEnergyKcals: todayEnergy)
-    }
-    
-    private var bodyBattery: Double {
-        return AlgorithmManager.shared.calculateBodyBattery(recoveryScore: recoveryScore, exertionScore: todayExertion)
-    }
-    
-    private var sleepScore: Double {
-        let calendar = Calendar.current
-        let daySamples = samples.filter { $0.type == "HKCategoryTypeIdentifierSleepAnalysis" && calendar.isDate($0.endDate, inSameDayAs: selectedDate) }
-        let totalHours = daySamples.reduce(0) { $0 + $1.value }
-        return totalHours > 0 ? totalHours : 7.5 // Fallback to 7.5 if no data
-    }
-    
-    // MARK: - History Calculations
-    private var exertionHistory: [ChartDataPoint] {
-        let calendar = Calendar.current
-        var trend: [ChartDataPoint] = []
-        for i in 0..<90 {
-            guard let day = calendar.date(byAdding: .day, value: -i, to: Date()) else { continue }
-            let energy = samples
-                .filter { $0.type == String.activeEnergyBurned && calendar.isDate($0.endDate, inSameDayAs: day) }
-                .reduce(0) { $0 + $1.value }
-            let val = AlgorithmManager.shared.calculateExertion(activeEnergyKcals: energy)
-            trend.append(ChartDataPoint(date: day, value: val))
-        }
-        return trend
-    }
-    
-    private var recoveryHistory: [ChartDataPoint] {
-        let calendar = Calendar.current
-        var trend: [ChartDataPoint] = []
-        let allSamples = Array(samples)
-        for i in 0..<90 {
-            guard let day = calendar.date(byAdding: .day, value: -i, to: Date()) else { continue }
-            let val = AlgorithmManager.shared.calculateRecovery(samples: allSamples, date: day, sleepHours: 7.5)
-            trend.append(ChartDataPoint(date: day, value: val))
-        }
-        return trend
-    }
-    
-    private var bodyBatteryHistory: [ChartDataPoint] {
-        let calendar = Calendar.current
-        var trend: [ChartDataPoint] = []
-        let allSamples = Array(samples)
-        for i in 0..<90 {
-            guard let day = calendar.date(byAdding: .day, value: -i, to: Date()) else { continue }
-            let rec = AlgorithmManager.shared.calculateRecovery(samples: allSamples, date: day, sleepHours: 7.5)
-            let energy = allSamples
-                .filter { $0.type == String.activeEnergyBurned && calendar.isDate($0.endDate, inSameDayAs: day) }
-                .reduce(0) { $0 + $1.value }
-            let exe = AlgorithmManager.shared.calculateExertion(activeEnergyKcals: energy)
-            let val = AlgorithmManager.shared.calculateBodyBattery(recoveryScore: rec, exertionScore: exe)
-            trend.append(ChartDataPoint(date: day, value: val))
-        }
-        return trend
-    }
-    
-    private var sleepHistory: [ChartDataPoint] {
-        let calendar = Calendar.current
-        var trend: [ChartDataPoint] = []
-        let allSamples = samples.filter { $0.type == "HKCategoryTypeIdentifierSleepAnalysis" }
-        
-        for i in 0..<90 {
-            if let day = calendar.date(byAdding: .day, value: -i, to: Date()) {
-                let daySamples = allSamples.filter { calendar.isDate($0.endDate, inSameDayAs: day) }
-                let totalHours = daySamples.reduce(0) { $0 + $1.value }
-                if totalHours > 0 {
-                    trend.append(ChartDataPoint(date: day, value: totalHours))
-                }
-            }
-        }
-        return trend
-    }
-    
-    private var hrvHistory: [ChartDataPoint] {
-        samples.filter { $0.type == String.heartRateVariabilitySDNN }.map { ChartDataPoint(date: $0.endDate, value: $0.value) }
-    }
-    
-    private var restingHRHistory: [ChartDataPoint] {
-        samples.filter { $0.type == String.restingHeartRate }.map { ChartDataPoint(date: $0.endDate, value: $0.value) }
-    }
-    
-    private var respRateHistory: [ChartDataPoint] {
-        samples.filter { $0.type == String.respiratoryRate }.map { ChartDataPoint(date: $0.endDate, value: $0.value) }
-    }
-    
-    private var spo2History: [ChartDataPoint] {
-        samples.filter { $0.type == String.oxygenSaturation }.map { ChartDataPoint(date: $0.endDate, value: $0.value * 100.0) }
-    }
+    // These now come from the ViewModel to avoid main thread hangs
     
     private var currentChartConfiguration: ChartConfiguration? {
         guard let title = selectedMetricTitle else { return nil }
         // Pinned computed metrics
         switch title {
-        case "Recovery": return ChartConfiguration(title: "Recovery", history: recoveryHistory, color: .green)
-        case "Sleep": return ChartConfiguration(title: "Sleep", history: sleepHistory, color: .indigo)
-        case "Exertion": return ChartConfiguration(title: "Exertion", history: exertionHistory, color: .orange)
-        case "Body Battery": return ChartConfiguration(title: "Body Battery", history: bodyBatteryHistory, color: .cyan)
+        case "Recovery": return ChartConfiguration(title: "Recovery", history: viewModel.recoveryHistory, color: .green)
+        case "Sleep": return ChartConfiguration(title: "Sleep", history: viewModel.sleepHistory, color: .indigo)
+        case "Exertion": return ChartConfiguration(title: "Exertion", history: viewModel.exertionHistory, color: .orange)
+        case "Body Battery": return ChartConfiguration(title: "Body Battery", history: viewModel.bodyBatteryHistory, color: .cyan)
         default: break
         }
         // Dynamic HealthKit metrics: title IS the HK type identifier
@@ -258,19 +319,19 @@ public struct DashboardView: View {
     /// Card for pinned computed metrics
     @ViewBuilder
     private func pinnedCard(_ title: String) -> some View {
-        let sleepHours = Int(sleepScore)
-        let sleepMinutes = Int((sleepScore - Double(sleepHours)) * 60)
+        let sleepHours = Int(viewModel.sleepScore)
+let sleepMinutes = Int((viewModel.sleepScore - Double(sleepHours)) * 60)
         let sleepStr = sleepHours > 0 ? "\(sleepHours)h \(sleepMinutes)m" : "--h"
         
         switch title {
         case "Recovery":
-            MetricCard(title: "Recovery", value: String(format: "%.0f%%", recoveryScore), icon: "bolt.heart.fill", color: recoveryScore > 66 ? .green : (recoveryScore > 33 ? .yellow : .red), isSelected: selectedMetricTitle == "Recovery") { toggleMetric("Recovery") }
+            MetricCard(title: "Recovery", value: String(format: "%.0f%%", viewModel.recoveryScore), icon: "bolt.heart.fill", color: viewModel.recoveryScore > 66 ? .green : (viewModel.recoveryScore > 33 ? .yellow : .red), description: "Your body's readiness for physical and mental stress.", isSelected: selectedMetricTitle == "Recovery") { toggleMetric("Recovery") }
         case "Sleep":
-            MetricCard(title: "Sleep", value: sleepStr, icon: "bed.double.fill", color: .indigo, isSelected: selectedMetricTitle == "Sleep") { toggleMetric("Sleep") }
-        case "Exertion":
-            MetricCard(title: "Exertion", value: String(format: "%.1f", todayExertion), icon: "flame.fill", color: .orange, isSelected: selectedMetricTitle == "Exertion") { toggleMetric("Exertion") }
+            MetricCard(title: "Sleep", value: sleepStr, icon: "bed.double.fill", color: .indigo, description: "Total duration of your last recorded sleep session.", isSelected: selectedMetricTitle == "Sleep") { toggleMetric("Sleep") }
         case "Body Battery":
-            MetricCard(title: "Body Battery", value: String(format: "%.0f", bodyBattery), icon: "battery.100.bolt", color: .cyan, isSelected: selectedMetricTitle == "Body Battery") { toggleMetric("Body Battery") }
+            MetricCard(title: "Body Battery", value: String(format: "%.0f", viewModel.bodyBattery), icon: "battery.100.bolt", color: .cyan, description: "Your remaining energy level for the day.", isSelected: selectedMetricTitle == "Body Battery") { toggleMetric("Body Battery") }
+        case "Exertion":
+            MetricCard(title: "Exertion", value: String(format: "%.1f", viewModel.todayExertion), icon: "flame.fill", color: .orange, description: "Daily strain based on your active energy expenditure.", isSelected: selectedMetricTitle == "Exertion") { toggleMetric("Exertion") }
         default:
             EmptyView()
         }
@@ -286,6 +347,7 @@ public struct DashboardView: View {
             value: valueStr,
             icon: info.icon,
             color: color,
+            description: info.description,
             isSelected: selectedMetricTitle == typeIdentifier
         ) { toggleMetric(typeIdentifier) }
     }
@@ -302,152 +364,211 @@ public struct DashboardView: View {
         } detail: {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
-                    
-                    // MARK: - Header
-                    HStack(alignment: .center) {
-                        Text(Calendar.current.isDateInToday(selectedDate) ? "Today's Training Readiness" : "Training Readiness")
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
-                        
-                        Spacer()
-                        
-                        // Connection Status Indicator
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(syncManager.isConnected ? Color.green : (syncManager.nearbyPeers.isEmpty ? Color.red : Color.orange))
-                                .frame(width: 8, height: 8)
-                            
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text(syncManager.isConnected ? "Connected to iPhone" : (syncManager.nearbyPeers.isEmpty ? "Disconnected" : "Found Device..."))
-                                    .font(.caption.bold())
-                                
-                                if !syncManager.isConnected && !syncManager.nearbyPeers.isEmpty {
-                                    Text(syncManager.nearbyPeers.first?.displayName ?? "")
-                                        .font(.system(size: 8))
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            .foregroundColor(.secondary)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color.secondary.opacity(0.1))
-                        .cornerRadius(20)
-                        .onTapGesture {
-                            // Reset and restart discovery
-                            syncManager.reset()
-                        }
-                        .padding(.trailing, 8)
-                        
-                        // Full Sync Button
-                        Button(action: {
-                            syncManager.requestFullSync()
-                        }) {
-                            Label("Sync", systemImage: "arrow.triangle.2.circlepath")
-                                .font(.subheadline.bold())
-                        }
-                        .disabled(!syncManager.isConnected)
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color(NSColor.controlBackgroundColor))
-                        .cornerRadius(6)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                        )
-                        .padding(.trailing, 8)
-                        
-                        if !Calendar.current.isDateInToday(selectedDate) {
-                            Button("Today") {
-                                selectedDate = Date()
-                            }
-                            .buttonStyle(.link)
-                            .font(.headline)
-                            .padding(.trailing, 8)
-                        }
-                        
-                        Button(action: { showingDatePicker.toggle() }) {
-                            HStack(spacing: 4) {
-                                Text(dateFormatter.string(from: selectedDate))
-                                    .font(.subheadline.bold())
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.caption2)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color(NSColor.controlBackgroundColor))
-                            .cornerRadius(6)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .popover(isPresented: $showingDatePicker, arrowEdge: .bottom) {
-                            DatePicker("", selection: $selectedDate, displayedComponents: .date)
-                                .datePickerStyle(.graphical)
-                                .padding()
-                                .frame(width: 300)
-                        }
-                    }
-                    .padding(.horizontal)
-                    
-                    // MARK: - Pinned Metrics (always on top)
-                    LazyVGrid(columns: columns, spacing: 20) {
-                        ForEach(pinnedMetricTitles, id: \.self) { title in
-                            pinnedCard(title)
-                        }
-                    }
-                    .padding(.horizontal)
-                    
-                    // Chart for pinned metrics
-                    if let selected = selectedMetricTitle,
-                       pinnedMetricTitles.contains(selected),
-                       let config = currentChartConfiguration {
-                        DetailChartSection(config: config, selectedDate: selectedDate)
-                            .padding(.horizontal)
-                            .padding(.top, 8)
-                    }
-                    
-                    // MARK: - Discovered HealthKit Metrics (Grouped)
-                    let grouped = groupedDiscoveredMetrics
-                    let sortedCategories = HealthKitMetricInfo.categoryOrder.filter { grouped[$0] != nil }
-                    
-                    ForEach(sortedCategories, id: \.self) { category in
-                        VStack(alignment: .leading, spacing: 16) {
-                            Text(category)
-                                .font(.title2.bold())
-                                .padding(.horizontal)
-                                .padding(.top, 16)
-                            
-                            if let typeIds = grouped[category] {
-                                let metricChunks = typeIds.chunked(into: 4)
-                                ForEach(metricChunks.indices, id: \.self) { i in
-                                    let chunk = metricChunks[i]
-                                    
-                                    LazyVGrid(columns: columns, spacing: 20) {
-                                        ForEach(chunk, id: \.self) { typeId in
-                                            dynamicCard(for: typeId)
-                                        }
-                                    }
-                                    .padding(.horizontal)
-                                    
-                                    if let selected = selectedMetricTitle,
-                                       chunk.contains(selected),
-                                       let config = currentChartConfiguration {
-                                        DetailChartSection(config: config, selectedDate: selectedDate)
-                                            .padding(.horizontal)
-                                            .padding(.top, 8)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
+                    headerView
+                    overviewSection
+                    categorySections
                 }
                 .padding(.vertical, 24)
             }
             .background(Color(NSColor.windowBackgroundColor))
+            .onAppear {
+                viewModel.updateIfNeeded(date: selectedDate)
+            }
+            .onChange(of: samples.count) {
+                viewModel.updateIfNeeded(date: selectedDate)
+            }
+            .onChange(of: selectedMetricTitle) { oldValue, newValue in
+                if let _ = newValue {
+                    syncManager.requestFullSync()
+                    viewModel.updateIfNeeded(date: selectedDate)
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var headerView: some View {
+        HStack(alignment: .center) {
+            Text(Calendar.current.isDateInToday(selectedDate) ? "Today's Training Readiness" : "Training Readiness")
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+            
+            if viewModel.isCalculating {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(.leading, 8)
+            }
+            
+            Spacer()
+            
+            // Connection Status Indicator
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(syncManager.isConnected ? Color.green : (syncManager.nearbyPeers.isEmpty ? Color.red : Color.orange))
+                    .frame(width: 8, height: 8)
+                
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(syncManager.isConnected ? "Connected to iPhone" : (syncManager.nearbyPeers.isEmpty ? "Disconnected" : "Found Device..."))
+                        .font(.caption.bold())
+                    
+                    if !syncManager.isConnected && !syncManager.nearbyPeers.isEmpty {
+                        Text(syncManager.nearbyPeers.first?.displayName ?? "")
+                            .font(.system(size: 8))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.secondary.opacity(0.1))
+            .cornerRadius(20)
+            .onTapGesture {
+                syncManager.reset()
+            }
+            .padding(.trailing, 8)
+            
+            // Full Sync Button
+            Button(action: {
+                syncManager.requestFullSync()
+            }) {
+                Label("Sync", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.subheadline.bold())
+                    .symbolEffect(.rotate, options: .repeating, isActive: syncManager.isSyncing)
+            }
+            .disabled(!syncManager.isConnected || syncManager.isSyncing)
+            .buttonStyle(.plain)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(NSColor.controlBackgroundColor))
+            .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+            )
+            .padding(.trailing, 8)
+            
+            if !Calendar.current.isDateInToday(selectedDate) {
+                Button("Today") {
+                    selectedDate = Date()
+                }
+                .buttonStyle(.link)
+                .font(.headline)
+                .padding(.trailing, 8)
+            }
+            Button(action: { showingDatePicker.toggle() }) {
+                HStack(spacing: 4) {
+                    Text(dateFormatter.string(from: selectedDate))
+                        .font(.subheadline.bold())
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showingDatePicker, arrowEdge: .bottom) {
+                DatePicker("", selection: $selectedDate, displayedComponents: .date)
+                    .datePickerStyle(.graphical)
+                    .padding()
+                    .frame(width: 300)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+    }
+    
+    @ViewBuilder
+    private var overviewSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("Overview")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
+                
+                LazyVGrid(columns: columns, spacing: 20) {
+                    ForEach(pinnedMetricTitles, id: \.self) { title in
+                        pinnedCard(title)
+                    }
+                }
+            }
+            .padding(20)
+            
+            if let selected = selectedMetricTitle,
+               pinnedMetricTitles.contains(selected),
+               let config = currentChartConfiguration {
+                DetailChartSection(config: config, selectedDate: selectedDate)
+                    .padding(.bottom, 20)
+            }
+        }
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+        )
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+    }
+    
+    @ViewBuilder
+    private var categorySections: some View {
+        let grouped = viewModel.groupedDiscoveredMetrics
+        let sortedCategories = HealthKitMetricInfo.categoryOrder.filter { grouped[$0] != nil }
+        
+        ForEach(sortedCategories, id: \.self) { category in
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text(category)
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    
+                    if syncManager.isSyncing {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .symbolEffect(.rotate, options: .repeating)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
+                .padding(.bottom, 10)
+                
+                if let typeIds = grouped[category] {
+                    let metricChunks = typeIds.chunked(into: 4)
+                    ForEach(metricChunks.indices, id: \.self) { i in
+                        let chunk = metricChunks[i]
+                        
+                        LazyVGrid(columns: columns, spacing: 20) {
+                            ForEach(chunk, id: \.self) { typeId in
+                                dynamicCard(for: typeId)
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, (chunk == metricChunks.last && selectedMetricTitle == nil) ? 20 : 10)
+                        
+                        if let selected = selectedMetricTitle,
+                           chunk.contains(selected),
+                           let config = currentChartConfiguration {
+                            DetailChartSection(config: config, selectedDate: selectedDate)
+                                .padding(.bottom, 20)
+                        }
+                    }
+                }
+            }
+            .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+            )
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
         }
     }
 }
@@ -481,35 +602,48 @@ struct MetricCard: View {
     var value: String
     var icon: String
     var color: Color
+    var description: String = ""
     var isSelected: Bool
     var action: () -> Void
     
     @State private var isHovered = false
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
                 Image(systemName: icon)
-                    .font(.system(size: 24))
+                    .font(.system(size: 18))
                     .foregroundColor(color)
                     .symbolEffect(.bounce, options: .nonRepeating, value: isHovered)
+                
+                Text(title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.primary)
+                
                 Spacer()
+                
+                Text(value)
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
             }
             
-            VStack(alignment: .leading, spacing: 4) {
-                Text(value)
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                Text(title)
-                    .font(.subheadline)
+            if !description.isEmpty {
+                Text(description)
+                    .font(.system(size: 12))
                     .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            
+            Spacer(minLength: 0)
         }
-        .padding(24)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 100)
         .background(isSelected ? color.opacity(0.15) : Color(NSColor.controlBackgroundColor))
         .cornerRadius(16)
         .overlay(
             RoundedRectangle(cornerRadius: 16)
-                .stroke(isSelected ? color : Color.clear, lineWidth: 2)
+                .stroke(isSelected ? color : Color.secondary.opacity(0.2), lineWidth: isSelected ? 2 : 1)
         )
         .shadow(color: isHovered || isSelected ? color.opacity(0.3) : Color.black.opacity(0.05), radius: isHovered || isSelected ? 15 : 10, x: 0, y: isHovered || isSelected ? 8 : 4)
         .scaleEffect(isHovered && !isSelected ? 1.02 : 1.0)
@@ -532,45 +666,48 @@ struct DetailChartSection: View {
     @State private var filter: TimeFilter = .w1
     @State private var rawSelectedDate: Date? = nil
     
-    private var dateDomain: (start: Date, end: Date) {
-        let halfDuration = filter.timeInterval / 2
-        var startDate = selectedDate.addingTimeInterval(-halfDuration)
-        var endDate = selectedDate.addingTimeInterval(halfDuration)
-        
-        let maxDataDate = config.history.max(by: { $0.date < $1.date })?.date ?? Date()
-        
-        if endDate > maxDataDate {
-            endDate = maxDataDate
-            startDate = maxDataDate.addingTimeInterval(-filter.timeInterval)
-        }
-        
-        return (Calendar.current.startOfDay(for: startDate), Calendar.current.startOfDay(for: endDate))
-    }
-    
     var binnedHistory: [ChartDataPoint] {
-        let domain = dateDomain
         let calendar = Calendar.current
-        let inRange = config.history.filter { calendar.startOfDay(for: $0.date) >= domain.start && calendar.startOfDay(for: $0.date) <= domain.end }
-        
-        let grouping: (Date) -> Date
-        // Bin by day
-        grouping = { date in Calendar.current.startOfDay(for: date) }
-        
-        let grouped = Dictionary(grouping: inRange, by: { grouping($0.date) })
-        let binned = grouped.map { (key, value) -> ChartDataPoint in
+        let grouped = Dictionary(grouping: config.history, by: { calendar.startOfDay(for: $0.date) })
+        let allBinned = grouped.map { (key, value) -> ChartDataPoint in
             let avg = value.reduce(0) { $0 + $1.value } / Double(value.count)
             return ChartDataPoint(date: key, value: avg)
         }.sorted { $0.date < $1.date }
         
-        return binned
+        guard let latest = allBinned.last?.date else { return [] }
+        let startLimit = latest.addingTimeInterval(-filter.timeInterval + 3600)
+        return allBinned.filter { $0.date >= startLimit }
+    }
+    
+    private var dateDomain: (start: Date, end: Date) {
+        let points = binnedHistory
+        guard let first = points.first?.date, let last = points.last?.date else {
+            let end = selectedDate
+            let start = end.addingTimeInterval(-filter.timeInterval)
+            return (start, end)
+        }
+        return (first, last)
     }
     
     var yDomain: ClosedRange<Double> {
-        let values = binnedHistory.map { $0.value }
-        let minVal = values.min() ?? 0
-        let maxVal = values.max() ?? 100
-        let padding = max((maxVal - minVal) * 0.15, 2.0)
-        return max(0, minVal - padding)...(maxVal + padding)
+        let values = binnedHistory.map { $0.value }.filter { $0.isFinite }
+        let rawMin = values.min() ?? 0
+        let rawMax = values.max() ?? 10
+        
+        // Only use the 70.0 threshold for percentage-based metrics
+        let isPercentage = config.title == "Recovery" || config.title == "Body Battery"
+        let threshold = 70.0
+        
+        let minVal = isPercentage ? min(rawMin, threshold * 0.5) : rawMin * 0.9
+        let maxVal = isPercentage ? max(rawMax, threshold * 1.1) : rawMax * 1.1
+        
+        let diff = maxVal - minVal
+        let padding = max(diff * 0.05, 0.5)
+        
+        let start = minVal - padding
+        let end = maxVal + padding
+        
+        return (start.isFinite ? start : 0)...(end.isFinite ? end : 10)
     }
     
     private func findClosest(to target: Date, in history: [ChartDataPoint]) -> ChartDataPoint? {
@@ -579,130 +716,187 @@ struct DetailChartSection: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("\(config.title) Trend")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                Spacer()
-                Picker("", selection: $filter) {
-                    ForEach(TimeFilter.allCases, id: \.self) { f in
-                        Text(f.rawValue).tag(f)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 250)
-            }
+            chartHeader
+                .padding(.horizontal, 20)
             
-            if config.history.isEmpty {
-                Text("No data available")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if binnedHistory.isEmpty {
-                Text("No data for this period")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if binnedHistory.isEmpty {
+                emptyStateView
             } else {
-                Chart {
-                    if config.title == "Recovery" {
-                        RuleMark(y: .value("Yellow", 66))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4]))
-                            .foregroundStyle(Color.yellow.opacity(0.8))
-                        RuleMark(y: .value("Red", 33))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4]))
-                            .foregroundStyle(Color.red.opacity(0.8))
-                    }
-                    
-                    if config.title == "Body Battery" {
-                        RuleMark(y: .value("Yellow", 50))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4]))
-                            .foregroundStyle(Color.yellow.opacity(0.8))
-                        RuleMark(y: .value("Red", 25))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4]))
-                            .foregroundStyle(Color.red.opacity(0.8))
-                    }
-                    
-                    ForEach(binnedHistory) { data in
-                        LineMark(
-                            x: .value("Date", data.date),
-                            y: .value("Value", data.value)
-                        )
-                        .interpolationMethod(.catmullRom)
-                        .foregroundStyle(config.color.gradient)
-                        .symbol(Circle().strokeBorder(lineWidth: 1.5))
-                        .symbolSize(40)
-                        
-                        AreaMark(
-                            x: .value("Date", data.date),
-                            y: .value("Value", data.value)
-                        )
-                        .interpolationMethod(.catmullRom)
-                        .foregroundStyle(LinearGradient(
-                            gradient: Gradient(colors: [config.color.opacity(0.3), .clear]),
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ))
-                    }
-                    
-                    if let hoverDate = rawSelectedDate,
-                       let closestData = findClosest(to: hoverDate, in: binnedHistory) {
-                        RuleMark(x: .value("Selected Date", closestData.date))
-                            .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5]))
-                            .foregroundStyle(Color.gray.opacity(0.5))
-                    }
-                }
-                .chartXScale(domain: {
-                    let domain = dateDomain
-                    return domain.start...domain.end
-                }())
-                .chartOverlay { proxy in
-                    GeometryReader { geo in
-                        Rectangle().fill(.clear).contentShape(Rectangle())
-                            .onContinuousHover { phase in
-                                switch phase {
-                                case .active(let location):
-                                    if let date: Date = proxy.value(atX: location.x) {
-                                        rawSelectedDate = date
-                                    }
-                                case .ended:
-                                    rawSelectedDate = nil
-                                }
-                            }
-                        
-                        if let hoverDate = rawSelectedDate,
-                           let closestData = findClosest(to: hoverDate, in: binnedHistory),
-                           let xPos = proxy.position(forX: closestData.date) {
-                            
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(closestData.date, format: .dateTime.month().day())
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                Text(String(format: "%.1f", closestData.value))
-                                    .font(.title3.bold())
-                                    .foregroundColor(config.color)
-                            }
-                            .padding(12)
-                            .background(Color(NSColor.controlBackgroundColor))
-                            .cornerRadius(10)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.gray.opacity(0.4), lineWidth: 1)
-                            )
-                            .shadow(color: Color.black.opacity(0.3), radius: 6, x: 0, y: 3)
-                            .position(x: min(max(xPos, 60), geo.size.width - 60), y: 35)
-                        }
-                    }
-                }
-                .chartXAxis {
-                    AxisMarks()
-                }
-                .chartYScale(domain: yDomain)
+                chartMainView
             }
         }
-        .padding(24)
-        .frame(height: 300)
+        .padding(.vertical, 24)
+        .frame(height: 350)
+        .frame(maxWidth: .infinity)
+        .background(Color.clear)
+    }
+    
+    @ViewBuilder
+    private var chartHeader: some View {
+        HStack {
+            Text("\(config.title) Trend")
+                .font(.headline)
+                .foregroundColor(.secondary)
+            
+            Spacer()
+            
+            HStack(spacing: 0) {
+                ForEach([TimeFilter.w1, .d30, .d60, .d90], id: \.self) { f in
+                    filterButton(f)
+                }
+            }
+            .cornerRadius(6)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3), lineWidth: 1))
+        }
+    }
+    
+    @ViewBuilder
+    private func filterButton(_ f: TimeFilter) -> some View {
+        Text(f.rawValue)
+            .font(.caption2.bold())
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(filter == f ? Color.orange : Color.gray.opacity(0.1))
+            .foregroundColor(filter == f ? .white : .primary)
+            .onTapGesture { filter = f }
+    }
+    
+    @ViewBuilder
+    private var emptyStateView: some View {
+        Text("No data for this period")
+            .font(.subheadline)
+            .foregroundColor(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    @ViewBuilder
+    private var chartMainView: some View {
+        let gradient = LinearGradient(colors: [config.color.opacity(0.3), .clear], startPoint: .top, endPoint: .bottom)
+        
+        Chart {
+            chartMainContent(gradient: gradient)
+        }
+        .chartXScale(domain: dateDomain.start...dateDomain.end)
+        .chartYScale(domain: yDomain)
+        .chartXAxis {
+            AxisMarks(values: .stride(by: .day, count: filter == .w1 ? 2 : (filter == .d30 ? 7 : 14))) { value in
+                AxisGridLine()
+                AxisValueLabel(format: .dateTime.month().day())
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading) { _ in
+                AxisGridLine()
+                AxisValueLabel()
+                    .offset(x: -16)
+            }
+            AxisMarks(position: .trailing) { _ in
+                AxisValueLabel()
+                    .offset(x: 16)
+            }
+        }
+        .chartOverlay { chartOverlay($0) }
+        .padding(.horizontal, 32)
+        .clipped()
+    }
+    
+    @ChartContentBuilder
+    private func chartMainContent(gradient: LinearGradient) -> some ChartContent {
+        chartAnnotations
+        chartDataMarks(gradient: gradient)
+        chartHoverSelection
+    }
+    
+    
+    @ChartContentBuilder
+    private var chartAnnotations: some ChartContent {
+        if config.title == "Recovery" {
+            RuleMark(y: .value("Yellow", 66))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4]))
+                .foregroundStyle(Color.yellow.opacity(0.8))
+            RuleMark(y: .value("Red", 33))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4]))
+                .foregroundStyle(Color.red.opacity(0.8))
+        }
+        
+        if config.title == "Body Battery" {
+            RuleMark(y: .value("Yellow", 50))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4]))
+                .foregroundStyle(Color.yellow.opacity(0.8))
+        }
+    }
+    
+    @ChartContentBuilder
+    private func chartDataMarks(gradient: LinearGradient) -> some ChartContent {
+        ForEach(binnedHistory) { point in
+            AreaMark(x: .value("Date", point.date), y: .value("Value", point.value))
+                .foregroundStyle(gradient)
+                .interpolationMethod(.catmullRom)
+            
+            LineMark(x: .value("Date", point.date), y: .value("Value", point.value))
+                .foregroundStyle(config.color)
+                .lineStyle(StrokeStyle(lineWidth: 3))
+                .interpolationMethod(.catmullRom)
+            
+            PointMark(x: .value("Date", point.date), y: .value("Value", point.value))
+                .foregroundStyle(config.color)
+                .symbolSize(30)
+        }
+    }
+    
+    @ChartContentBuilder
+    private var chartHoverSelection: some ChartContent {
+        if let hoverDate = rawSelectedDate,
+           let closestData = findClosest(to: hoverDate, in: binnedHistory) {
+            RuleMark(x: .value("Selected Date", closestData.date))
+                .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5]))
+                .foregroundStyle(Color.gray.opacity(0.5))
+        }
+    }
+    
+    private func chartOverlay(_ proxy: ChartProxy) -> some View {
+        GeometryReader { geo in
+            Rectangle().fill(.clear).contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let location):
+                        if let date: Date = proxy.value(atX: location.x) {
+                            rawSelectedDate = date
+                        }
+                    case .ended:
+                        rawSelectedDate = nil
+                    }
+                }
+            
+            if let hoverDate = rawSelectedDate,
+               let closestData = findClosest(to: hoverDate, in: binnedHistory),
+               let xPos = proxy.position(forX: closestData.date) {
+                tooltipView(data: closestData, xPos: xPos, totalWidth: geo.size.width)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func tooltipView(data: ChartDataPoint, xPos: CGFloat, totalWidth: CGFloat) -> some View {
+        let xOffset = min(max(xPos, 60), totalWidth - 60)
+        
+        VStack(alignment: .leading, spacing: 6) {
+            Text(data.date, format: .dateTime.month().day())
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            Text(String(format: "%.1f", data.value))
+                .font(.title3.bold())
+                .foregroundColor(config.color)
+        }
+        .padding(12)
         .background(Color(NSColor.controlBackgroundColor))
-        .cornerRadius(16)
-        .shadow(color: Color.black.opacity(0.05), radius: 10, x: 0, y: 4)
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.gray.opacity(0.4), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.3), radius: 6, x: 0, y: 3)
+        .position(x: xOffset, y: 35)
     }
 }
 #endif

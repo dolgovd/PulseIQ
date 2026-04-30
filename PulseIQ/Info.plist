@@ -4,8 +4,8 @@
 <dict>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_pulseiq-sync._tcp</string>
-		<string>_pulseiq-sync._udp</string>
+		<string>_piq._tcp</string>
+		<string>_piq._udp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>PulseIQ uses the local network to synchronize health data between your iPhone and Mac.</string>
