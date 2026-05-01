@@ -162,9 +162,35 @@ class DashboardViewModel: ObservableObject {
             
             let battery = min(max(recovery - (exertion * 5.0), 5.0), 100.0)
             
-            let sleepSamples = dtos.filter { $0.type == sleepType && calendar.isDate($0.endDate, inSameDayAs: date) }
-            let sleepHrs = sleepSamples.reduce(0) { $0 + $1.value }
-            let finalSleep = sleepHrs > 0 ? sleepHrs : 7.5
+            func calculateSleepDuration(samples: [SyncPayload.SampleDto]) -> Double {
+                guard !samples.isEmpty else { return 0 }
+                
+                // Prioritize precise stages (3=Core, 4=Deep, 5=REM) if available
+                let stages = samples.filter { val in [3.0, 4.0, 5.0].contains(val.value) }
+                
+                // If we have stages, use them exclusively. 
+                // Otherwise, use all available samples (handles both new 'Unspecified' and old 'Duration' data).
+                let filtered = stages.isEmpty ? samples : stages
+                
+                // Sort by start date to merge intervals
+                let sorted = filtered.sorted { $0.startDate < $1.startDate }
+                var merged: [(start: Date, end: Date)] = []
+                
+                for s in sorted {
+                    if let last = merged.last, s.startDate < last.end {
+                        let newEnd = max(last.end, s.endDate)
+                        merged[merged.count - 1] = (last.start, newEnd)
+                    } else {
+                        merged.append((s.startDate, s.endDate))
+                    }
+                }
+                
+                let totalSeconds = merged.reduce(0) { $0 + $1.end.timeIntervalSince($1.start) }
+                return totalSeconds / 3600.0
+            }
+
+            let todaySleepSamples = dtos.filter { $0.type == sleepType && calendar.isDate($0.endDate, inSameDayAs: date) }
+            let finalSleep = calculateSleepDuration(samples: todaySleepSamples)
             
             var recTrend: [ChartDataPoint] = []
             var exeTrend: [ChartDataPoint] = []
@@ -175,7 +201,7 @@ class DashboardViewModel: ObservableObject {
             let allSleepSamples = dtos.filter { $0.type == sleepType }
             
             for i in 0..<90 {
-                guard let day = calendar.date(byAdding: .day, value: -i, to: Date()) else { continue }
+                guard let day = calendar.date(byAdding: .day, value: -i, to: date) else { continue }
                 
                 let rec = calculateRecoveryLocal(samples: dtos, date: day)
                 recTrend.append(ChartDataPoint(date: day, value: rec))
@@ -189,8 +215,8 @@ class DashboardViewModel: ObservableObject {
                 let bat = min(max(rec - (exe * 5.0), 5.0), 100.0)
                 batTrend.append(ChartDataPoint(date: day, value: bat))
                 
-                let daySleep = allSleepSamples.filter { calendar.isDate($0.endDate, inSameDayAs: day) }
-                let hrs = daySleep.reduce(0) { $0 + $1.value }
+                let daySleepSamples = allSleepSamples.filter { calendar.isDate($0.endDate, inSameDayAs: day) }
+                let hrs = calculateSleepDuration(samples: daySleepSamples)
                 if hrs > 0 {
                     slpTrend.append(ChartDataPoint(date: day, value: hrs))
                 }

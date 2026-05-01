@@ -209,23 +209,29 @@ public class HealthKitManager: ObservableObject {
         let predicate = HKQuery.predicateForSamples(withStart: lastDate, end: Date(), options: .strictStartDate)
         let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
         
-        let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: 1000, sortDescriptors: [sortDescriptor]) { _, samples, error in
+        let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: [sortDescriptor]) { _, samples, error in
             guard let categorySamples = samples as? [HKCategorySample], error == nil else { return }
             
             let context = CoreDataManager.shared.container.newBackgroundContext()
             context.perform {
                 var newSamples: [HealthSample] = []
                 for sample in categorySamples {
-                    let healthSample = HealthSample(context: context)
-                    healthSample.id = sample.uuid
-                    healthSample.type = "HKCategoryTypeIdentifierSleepAnalysis"
+                    // Filter: Only count actual sleep time, excluding 'In Bed' (0) and 'Awake' (2)
+                    // asleepUnspecified = 1, asleepCore = 3, asleepDeep = 4, asleepREM = 5
+                    let val = sample.value
+                    let isAsleep = (val == 1 || val == 3 || val == 4 || val == 5)
                     
-                    // For sleep, we store duration in hours as the value
-                    let duration = sample.endDate.timeIntervalSince(sample.startDate) / 3600.0
-                    healthSample.value = duration
-                    healthSample.startDate = sample.startDate
-                    healthSample.endDate = sample.endDate
-                    newSamples.append(healthSample)
+                    if isAsleep {
+                        let healthSample = HealthSample(context: context)
+                        healthSample.id = sample.uuid
+                        healthSample.type = "HKCategoryTypeIdentifierSleepAnalysis"
+                        
+                        // Send the enum value (1, 3, 4, 5) so the Mac can prioritize stages
+                        healthSample.value = Double(val) 
+                        healthSample.startDate = sample.startDate
+                        healthSample.endDate = sample.endDate
+                        newSamples.append(healthSample)
+                    }
                 }
                 
                 if context.hasChanges {
